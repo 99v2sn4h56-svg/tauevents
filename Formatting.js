@@ -296,7 +296,18 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
     sheet.setColumnWidth(c, 128);
   }
 
-  const totalCardRows = dataRowCount * CARD_ROWS_PER_EVENT_ + 1; // +1 footer instruction row
+  // Drop events whose date is more than a week in the past — a stale
+  // "upcoming events" list stops being useful. This reuses the exact
+  // same DATEVALUE parsing the countdown badge already relies on (via a
+  // temporary formula column, cleared immediately after reading it back)
+  // rather than re-implementing date parsing in Apps Script — those two
+  // date-reading paths would otherwise be able to silently disagree. A
+  // date that can't be parsed is KEPT, not hidden — never drop an event
+  // just because its date text is unusual.
+  const includedRowOffsets = getRecentOrUpcomingRowOffsets_(sheet, headerRow, dataRowCount, lastColumn, cols.dateLetter);
+  const visibleCount = includedRowOffsets.length;
+
+  const totalCardRows = visibleCount * CARD_ROWS_PER_EVENT_ + 1; // +1 footer instruction row
   sheet.insertRowsAfter(dataLastRow, totalCardRows);
 
   const tagRanges = [];
@@ -304,8 +315,8 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
   const descRows = [];
   let firstCardTitleRow = null;
 
-  for (let i = 0; i < dataRowCount; i++) {
-    const dataRow = headerRow + 1 + i;
+  for (let i = 0; i < visibleCount; i++) {
+    const dataRow = headerRow + 1 + includedRowOffsets[i];
     const cardTop = dataLastRow + 1 + i * CARD_ROWS_PER_EVENT_;
     const built = buildEventCard_(sheet, cardTop, dataRow, lastColumn, cols);
     tagRanges.push(built.tagRange);
@@ -355,18 +366,23 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
   } catch (err) {
     console.error('Description row auto-resize skipped: ' + err.message);
   }
-  for (let i = 0; i < dataRowCount; i++) {
+  for (let i = 0; i < visibleCount; i++) {
     const spacerRow = dataLastRow + 1 + i * CARD_ROWS_PER_EVENT_ + 3;
     sheet.setRowHeight(spacerRow, 20);
   }
 
-  const footerRow = dataLastRow + 1 + dataRowCount * CARD_ROWS_PER_EVENT_;
+  const footerRow = dataLastRow + 1 + visibleCount * CARD_ROWS_PER_EVENT_;
   const footerRange = sheet.getRange(footerRow, 1, 1, lastColumn);
   footerRange.setBorder(false, false, false, false, false, false);
   footerRange.merge();
+  const hiddenForAge = dataRowCount - visibleCount;
   sheet.getRange(footerRow, 1).setValue(
     '✎  Event details live in hidden rows ' + headerRow + '–' + dataLastRow + ' above — unhide them to add ' +
-    'or edit an event, then run TAU Tools → Refresh sheet formatting to update these cards.'
+    'or edit an event, then run TAU Tools → Refresh sheet formatting to update these cards.' +
+    (hiddenForAge > 0
+      ? ' (' + hiddenForAge + ' event' + (hiddenForAge === 1 ? '' : 's') + ' more than a week past its date ' +
+        (hiddenForAge === 1 ? 'is' : 'are') + " not shown below, but still there in those rows.)"
+      : '')
   );
   footerRange
     .setBackground(CARD_CANVAS_BG_)
@@ -390,10 +406,47 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
   // formula scanning a wide range) — now that the card rows themselves
   // contain formula-driven text in the same columns as the hidden data,
   // any range-scanning formula double-counts card content alongside the
-  // real rows. This function already knows the true count.
-  setUpcomingEventsCountTile_(sheet, lastColumn, dataRowCount);
+  // real rows. This function already knows the true count — and this is
+  // the visible (not-more-than-a-week-stale) count, matching what's
+  // actually shown below.
+  setUpcomingEventsCountTile_(sheet, lastColumn, visibleCount);
 
   setCardBlockRowCount_(sheet, totalCardRows);
+}
+
+
+/**
+ * Returns the (0-based, relative to headerRow+1) offsets of data rows
+ * whose event date is today, in the future, or up to a week in the
+ * past — i.e. every row EXCEPT ones more than a week stale. Parses via
+ * a temporary formula column (same DATEVALUE approach the countdown
+ * badge uses, cleared immediately after reading it back) so this can't
+ * disagree with what the countdown itself shows. A date that fails to
+ * parse is treated as 9999 days out — kept, never dropped, since we'd
+ * rather show an odd date than silently lose a real event.
+ */
+function getRecentOrUpcomingRowOffsets_(sheet, headerRow, dataRowCount, lastColumn, dateLetter) {
+  const scratchCol = lastColumn + 2; // just past the real columns; these rows are hidden anyway
+  const scratchRange = sheet.getRange(headerRow + 1, scratchCol, dataRowCount, 1);
+
+  const formulas = [];
+  for (let i = 0; i < dataRowCount; i++) {
+    const dataRow = headerRow + 1 + i;
+    formulas.push([
+      `=IFERROR(INT(DATEVALUE(REGEXREPLACE(TO_TEXT(${dateLetter}${dataRow}),"^[A-Za-z]+\\s*,\\s*","")))-INT(TODAY()),9999)`
+    ]);
+  }
+  scratchRange.setFormulas(formulas);
+  SpreadsheetApp.flush();
+
+  const dayDiffs = scratchRange.getValues().map(row => row[0]);
+  scratchRange.clearContent();
+
+  const offsets = [];
+  for (let i = 0; i < dataRowCount; i++) {
+    if (dayDiffs[i] >= -7) offsets.push(i);
+  }
+  return offsets;
 }
 
 
@@ -646,10 +699,10 @@ function ensureUpcomingEventsMasthead_(sheet) {
   const groups = splitColumnsIntoGroups_(lastColumn, 4);
 
   const tiles = [
-    { label: 'Upcoming events',   accent: BRAND_BLUE_DEEP_, formula: null },
-    { label: 'In planning',       accent: '#2E5090', formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"2.*")` },
-    { label: 'Awaiting response', accent: '#8A5D07', formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"1.*")` },
-    { label: 'Completed',         accent: '#227A45', formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"3.*")` }
+    { label: 'Upcoming events',   accent: BRAND_BLUE_DEEP_, shade: '#EDF1F8', formula: null },
+    { label: 'In planning',       accent: '#2E5090', shade: '#E7ECF9', formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"2.*")` },
+    { label: 'Awaiting response', accent: '#8A5D07', shade: '#FBF0DA', formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"1.*")` },
+    { label: 'Completed',         accent: '#227A45', shade: '#E4F3E9', formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"3.*")` }
   ];
 
   groups.forEach((group, i) => {
@@ -660,7 +713,7 @@ function ensureUpcomingEventsMasthead_(sheet) {
     labelCell.merge();
     sheet.getRange(2, group.startCol).setValue(tile.label.toUpperCase());
     labelCell
-      .setBackground('#FFFFFF')
+      .setBackground(tile.shade)
       .setFontColor(tile.accent)
       .setFontWeight('bold')
       .setFontStyle('normal')
@@ -676,7 +729,7 @@ function ensureUpcomingEventsMasthead_(sheet) {
       sheet.getRange(3, group.startCol).setFormula(tile.formula);
     }
     numberCell
-      .setBackground('#FFFFFF')
+      .setBackground(tile.shade)
       .setFontColor(BRAND_BLUE_DEEP_)
       .setFontWeight('bold')
       .setFontStyle('normal')
