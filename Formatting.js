@@ -342,18 +342,22 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
     sheet.getConditionalFormatRules().concat(tagStatusRules).concat(titleStatusRules)
   );
 
-  // Auto-fit each description row to its actual wrapped content, then put
-  // the spacer rows' deliberate height back (auto-resize would otherwise
-  // collapse those blank rows to a default height and undo the gaps
-  // between cards).
+  // Auto-fit each description row to its actual wrapped content, plus a
+  // little extra padding so the text has room to breathe instead of
+  // sitting flush against the row edges. Then put the spacer rows'
+  // deliberate height back (auto-resize would otherwise collapse those
+  // blank rows to a default height and undo the gaps between cards).
   try {
-    descRows.forEach(row => sheet.autoResizeRows(row, 1));
+    descRows.forEach(row => {
+      sheet.autoResizeRows(row, 1);
+      sheet.setRowHeight(row, sheet.getRowHeight(row) + 12);
+    });
   } catch (err) {
     console.error('Description row auto-resize skipped: ' + err.message);
   }
   for (let i = 0; i < dataRowCount; i++) {
     const spacerRow = dataLastRow + 1 + i * CARD_ROWS_PER_EVENT_ + 3;
-    sheet.setRowHeight(spacerRow, 16);
+    sheet.setRowHeight(spacerRow, 20);
   }
 
   const footerRow = dataLastRow + 1 + dataRowCount * CARD_ROWS_PER_EVENT_;
@@ -537,8 +541,11 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
     .setHorizontalAlignment('left')
     .setVerticalAlignment('middle');
 
-  // --- Description row (+ TAU Notes, if present) — the quietest tier:
-  // regular weight, italic, lightest ink, clearly supplementary ---
+  // --- Description row (+ TAU Notes, if present) — supplementary to the
+  // name, but still body text that has to be read, so it stays dark
+  // enough to be legible: regular weight (italic at this length just
+  // reads as harder to read, not "quieter"), dark slate ink, not the
+  // pale grey used for the venue/org line above it. ---
   const descRange = sheet.getRange(descRow, contentCol, 1, contentWidth);
   descRange.merge();
   const notesFormula = cols.notesLetter
@@ -547,10 +554,10 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
   sheet.getRange(descRow, contentCol).setFormula(`=TO_TEXT(${cols.descLetter}${dataRow})${notesFormula}`);
   descRange
     .setFontFamily('Public Sans')
-    .setFontSize(9)
+    .setFontSize(9.5)
     .setFontWeight('normal')
-    .setFontStyle('italic')
-    .setFontColor('#8A93A6')
+    .setFontStyle('normal')
+    .setFontColor('#374151')
     .setHorizontalAlignment('left')
     .setVerticalAlignment('top')
     .setWrap(true);
@@ -561,10 +568,10 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
   // not a ruled box, so this stays free of the "boxed dialog" look ---
   sheet.getRange(metaRow, contentCol, 2, contentWidth).setBackground('#FFFFFF');
 
-  sheet.setRowHeight(titleRow, 26);
-  sheet.setRowHeight(metaRow, 20);
-  sheet.setRowHeight(descRow, 32);
-  sheet.setRowHeight(spacerRow, 16);
+  sheet.setRowHeight(titleRow, 30);
+  sheet.setRowHeight(metaRow, 24);
+  sheet.setRowHeight(descRow, 34);
+  sheet.setRowHeight(spacerRow, 20);
 
   // Spacer row: matches the page backdrop, no border — the whitespace
   // gap between one card and the next.
