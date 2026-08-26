@@ -15,14 +15,20 @@ const UPCOMING_EVENTS_SHEET_NAME = 'TAU Upcoming Events';
 const STATUS_HEADER = 'Status';
 const MASTHEAD_MARKER_ = 'TAU EVENTS';
 
-// Blue / maroon brand palette for the masthead and stat tiles.
-const BRAND_MAROON_ = '#5C1B2E';   // banner background
-const BRAND_MAROON_DEEP_ = '#3E1220'; // stat number colour (deeper, reads on light bg)
-const BRAND_BLUE_ = '#2E5090';     // secondary accent (used sparingly)
-const BRAND_BANNER_TEXT_ = '#E7ECF5'; // light blue-white, reads on maroon
-const BRAND_TILE_BG_ = '#EEF2F8';  // cool light blue-grey stat tile background
-const BRAND_TILE_LABEL_ = '#51607A'; // muted blue-grey label text
+// Blue-forward brand palette. Blue is the primary/heading colour; maroon
+// is kept only as a minimal secondary accent (a thin rule under the
+// banner) rather than a competing second "main" colour.
+const BRAND_BLUE_ = '#2E5090';        // masthead banner background (primary)
+const BRAND_BLUE_DEEP_ = '#1B3968';   // stat tile numbers + card event-name text
+const BRAND_MAROON_ = '#5C1B2E';      // secondary accent only — banner underline rule
+const BRAND_BANNER_TEXT_ = '#EDF1F9'; // light blue-white, reads on the blue banner
+const BRAND_TILE_BG_ = '#EEF2F8';     // cool light blue-grey stat tile background
+const BRAND_TILE_LABEL_ = '#51607A';  // muted blue-grey label text
+const CARD_CANVAS_BG_ = '#F4F6FB';    // soft backdrop the cards float on, replacing table gridlines
 
+// Status colours are a separate, reserved palette — never the brand
+// blue/maroon — so a status is always readable as itself, not as "part
+// of the theme."
 const STATUS_STYLES_ = [
   { startsWith: '1.',                 background: '#FCE8B2', color: '#7F5B00', accent: '#D9A400' }, // Request received
   { startsWith: '2.',                 background: '#3C78D8', color: '#FFFFFF', accent: '#3C78D8' }, // Planning
@@ -31,6 +37,12 @@ const STATUS_STYLES_ = [
   { startsWith: 'Forwarded contacts', background: '#0F9D6F', color: '#FFFFFF', accent: '#0F9D6F' },
   { startsWith: 'Cancelled',          background: '#A31515', color: '#FFFFFF', accent: '#A31515' }
 ];
+
+// Card layout: 3 content rows per event (title+date / venue·org / description)
+// plus 1 blank spacer row, so consecutive cards read as separate blocks
+// floating on the canvas rather than adjoining table rows.
+const CARD_ROWS_PER_EVENT_ = 4;
+const CARD_META_KEY_ = 'tauCardBlockRowCount';
 
 
 function onOpen() {
@@ -108,13 +120,13 @@ function formatRequestsWorkflow() {
 
 /**
  * Turns "TAU Upcoming Events" into the executive-facing landing page:
- * a dark masthead banner + live stat tiles above the table (this is the
- * page higher-ups actually open, so the branding goes here, not on a
- * separate web page), the same colour-coded status chips as the mockup,
- * lighter borders, soft row banding, and frozen header/status column.
+ * a blue masthead banner + live stat tiles, then every event rendered
+ * as its own floating card (coloured status spine, big event name,
+ * venue/org line, description line) on a soft grey canvas — not a
+ * bordered grid. See rebuildEventCards_ for how the cards are built.
  *
- * Idempotent: re-running this does not duplicate the masthead — it
- * detects the existing banner and just refreshes formatting/formulas.
+ * Idempotent: re-running this does not duplicate the masthead or the
+ * card block — it detects both and rebuilds them fresh in place.
  */
 function formatUpcomingEventsSummary() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(UPCOMING_EVENTS_SHEET_NAME);
@@ -129,8 +141,8 @@ function formatUpcomingEventsSummary() {
 
 /**
  * Duplicates "TAU Upcoming Events" and runs the exact same formatting
- * logic against the copy only. Use this to verify the masthead/stat-tile
- * insert works before ever pointing it at the real tab — nothing here
+ * logic against the copy only. Use this to verify the masthead/card
+ * rebuild works before ever pointing it at the real tab — nothing here
  * touches the live sheet. Delete the copy from the tab bar when done.
  */
 function testUpcomingEventsFormattingOnCopy() {
@@ -163,7 +175,7 @@ function testUpcomingEventsFormattingOnCopy() {
 
 
 /**
- * The actual masthead + formatting logic, factored out so it can run
+ * The actual masthead + card-rebuild logic, factored out so it can run
  * against either the real sheet or a disposable test copy.
  */
 function applyUpcomingEventsFormatting_(sheet) {
@@ -186,94 +198,246 @@ function applyUpcomingEventsFormatting_(sheet) {
     );
   }
 
-  const lastColumn = sheet.getLastColumn();
-  const lastRow = Math.max(sheet.getLastRow(), headerRow + 1);
+  const lastColumn = Math.max(sheet.getLastColumn(), 7);
   const headers = sheet.getRange(headerRow, 1, 1, lastColumn).getValues()[0];
-
   const statusCol = getOrCreateStatusHeader_(sheet, headers, 1, headerRow); // confirmed by inspection: column A
-  const statusRange = sheet.getRange(headerRow + 1, statusCol, lastRow - headerRow, 1);
 
-  statusRange.setBackground(null).setFontColor(null).setFontWeight('normal').setFontLine('none');
+  // Full rebuild below, so start from a clean slate rather than trying to
+  // reconcile old conditional-format rules against the new card ranges.
+  sheet.setConditionalFormatRules([]);
+  sheet.setHiddenGridlines(true);
+
+  rebuildEventCards_(sheet, headerRow, statusCol);
+
+  sheet.setFrozenRows(3); // keep the banner + stat tiles visible while scrolling the cards
+  sheet.setFrozenColumns(0);
+}
+
+
+/**
+ * Rebuilds the event listing as stacked cards instead of a flat table.
+ * The original one-row-per-event data (however it gets populated —
+ * this doesn't assume or change that) is kept completely intact, just
+ * hidden, directly under the masthead; every card is a live formula
+ * pointing back at its hidden data row. To add or edit an event: unhide
+ * those rows, make the change, then run "Refresh sheet formatting"
+ * again to regenerate the cards — the footer note left at the bottom
+ * of the card block says the same thing.
+ *
+ * Idempotent: the row-count of the previously generated card block is
+ * stored as sheet developer metadata (survives row inserts elsewhere on
+ * the sheet), so re-running this deletes the old card rows before
+ * rebuilding rather than stacking duplicates or losing track of where
+ * the real data ends and the generated cards begin.
+ */
+function rebuildEventCards_(sheet, headerRow, statusCol) {
+  const previousCardRows = getCardBlockRowCount_(sheet);
+  const priorLastRow = sheet.getLastRow();
+  const dataLastRow = previousCardRows > 0 ? priorLastRow - previousCardRows : priorLastRow;
+
+  if (previousCardRows > 0) {
+    sheet.deleteRows(dataLastRow + 1, previousCardRows);
+  }
+
+  const lastColumn = sheet.getLastColumn();
+  const dataRowCount = dataLastRow - headerRow;
+
+  if (dataRowCount <= 0) {
+    setCardBlockRowCount_(sheet, 0);
+    return;
+  }
+
+  // Reset then hide the header + data rows — they stay exactly as they
+  // are, just out of view, so nothing that reads or writes them by
+  // header/column position (this script or anything else) is affected.
+  sheet.showRows(headerRow, dataRowCount + 1);
+  sheet.hideRows(headerRow, dataRowCount + 1);
+
+  const headers = sheet.getRange(headerRow, 1, 1, lastColumn).getValues()[0];
+  const dateCol = findHeaderColumn_(headers, 'Event Date(s):');
+  const nameCol = findHeaderColumn_(headers, 'Name of Event:');
+  const venueCol = findHeaderColumn_(headers, 'Venue:');
+  const orgCol = findHeaderColumn_(headers, 'Name of Organisation:');
+  const descCol = findHeaderColumn_(headers, 'Short Description of Event:');
+  const notesCol = findHeaderColumn_(headers, 'TAU Notes');
+
+  if (!dateCol || !nameCol || !venueCol || !orgCol || !descCol) {
+    throw new Error(
+      'Could not find one or more expected columns ("Event Date(s):", "Name of Event:", ' +
+      '"Venue:", "Name of Organisation:", "Short Description of Event:") on "' +
+      sheet.getName() + '". Check the headers in row ' + headerRow + ' — they may have been renamed.'
+    );
+  }
+
+  const cols = {
+    statusLetter: columnToLetter_(statusCol),
+    dateLetter: columnToLetter_(dateCol),
+    nameLetter: columnToLetter_(nameCol),
+    venueLetter: columnToLetter_(venueCol),
+    orgLetter: columnToLetter_(orgCol),
+    descLetter: columnToLetter_(descCol),
+    notesLetter: notesCol ? columnToLetter_(notesCol) : null
+  };
+
+  const totalCardRows = dataRowCount * CARD_ROWS_PER_EVENT_ + 1; // +1 footer instruction row
+  sheet.insertRowsAfter(dataLastRow, totalCardRows);
+
+  const spineRanges = [];
+
+  for (let i = 0; i < dataRowCount; i++) {
+    const dataRow = headerRow + 1 + i;
+    const cardTop = dataLastRow + 1 + i * CARD_ROWS_PER_EVENT_;
+    spineRanges.push(buildEventCard_(sheet, cardTop, dataRow, lastColumn, cols));
+  }
 
   const statusRules = STATUS_STYLES_.map(style =>
     SpreadsheetApp.newConditionalFormatRule()
       .whenTextStartsWith(style.startsWith)
       .setBackground(style.background)
       .setFontColor(style.color)
-      .setBold(true)
-      .setRanges([statusRange])
+      .setRanges(spineRanges)
       .build()
   );
+  sheet.setConditionalFormatRules(sheet.getConditionalFormatRules().concat(statusRules));
 
-  setConditionalFormatRulesForRange_(sheet, statusRange, statusRules);
+  const footerRow = dataLastRow + 1 + dataRowCount * CARD_ROWS_PER_EVENT_;
+  const footerRange = sheet.getRange(footerRow, 1, 1, lastColumn);
+  footerRange.merge();
+  sheet.getRange(footerRow, 1).setValue(
+    '✎  Event details live in hidden rows ' + headerRow + '–' + dataLastRow + ' above — unhide them to add ' +
+    'or edit an event, then run TAU Tools → Refresh sheet formatting to update these cards.'
+  );
+  footerRange
+    .setFontFamily('Public Sans')
+    .setFontSize(9)
+    .setFontStyle('italic')
+    .setFontColor('#8A93A6')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  sheet.setRowHeight(footerRow, 22);
 
-  const dataRange = sheet.getRange(headerRow, 1, lastRow - headerRow + 1, lastColumn);
-  dataRange.setBorder(false, false, false, false, false, false);
-  dataRange.setBorder(true, true, true, true, true, true, '#D9D9D9', SpreadsheetApp.BorderStyle.SOLID);
-  dataRange.setFontFamily('Public Sans');
+  // Soft grey backdrop for any dead space below the card block, so the
+  // sheet doesn't trail off into stark white past the last card.
+  const maxRows = sheet.getMaxRows();
+  if (maxRows > footerRow) {
+    sheet.getRange(footerRow + 1, 1, maxRows - footerRow, lastColumn).setBackground(CARD_CANVAS_BG_);
+  }
 
-  applyRowBanding_(sheet, dataRange);
-  applyEventCardStyling_(sheet, headerRow, lastRow, lastColumn, statusCol);
-
-  sheet.setFrozenRows(headerRow);
-  sheet.setFrozenColumns(statusCol);
+  setCardBlockRowCount_(sheet, totalCardRows);
 }
 
 
 /**
- * Makes each data row read as its own event "card" rather than a plain
- * table row: a bold, larger event name, generous auto-fit row height,
- * and a coloured left-edge accent stripe matching that row's status —
- * the closest a spreadsheet grid can get to the mockup's timeline cards
- * without breaking the row-per-event data structure.
+ * Builds one 3-row event card starting at sheet row `top`, sourced
+ * entirely from live formulas pointing back at `dataRow` (the hidden
+ * flat-table row for this event) — never copied values, so the card
+ * always reflects whatever is in the data row as of the last refresh.
+ * Returns the merged status-spine range so the caller can batch all
+ * cards' spines into one set of conditional format rules.
  */
-function applyEventCardStyling_(sheet, headerRow, lastRow, lastColumn, statusCol) {
-  const firstDataRow = headerRow + 1;
-  const numDataRows = lastRow - headerRow;
+function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
+  const titleRow = top;
+  const metaRow = top + 1;
+  const descRow = top + 2;
+  const spacerRow = top + 3;
 
-  if (numDataRows <= 0) return;
+  // --- Left spine: status badge, spanning the full card height ---
+  const spineRange = sheet.getRange(titleRow, 1, 3, 1);
+  spineRange.merge();
+  sheet.getRange(titleRow, 1).setFormula(`=${cols.statusLetter}${dataRow}`);
+  spineRange
+    .setFontFamily('Public Sans')
+    .setFontSize(9)
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center')
+    .setVerticalAlignment('middle')
+    .setWrap(true);
 
-  const headers = sheet.getRange(headerRow, 1, 1, lastColumn).getValues()[0];
-  const nameCol = findHeaderColumn_(headers, 'Name of Event:');
+  // --- Title row: big event name + date, right-aligned ---
+  const nameRange = sheet.getRange(titleRow, 2, 1, lastColumn - 2);
+  nameRange.merge();
+  sheet.getRange(titleRow, 2).setFormula(`=${cols.nameLetter}${dataRow}`);
+  nameRange
+    .setFontFamily('Fraunces')
+    .setFontSize(13)
+    .setFontWeight('bold')
+    .setFontColor(BRAND_BLUE_DEEP_)
+    .setVerticalAlignment('middle');
 
-  if (nameCol > 0) {
-    sheet.getRange(firstDataRow, nameCol, numDataRows, 1)
-      .setFontSize(12)
-      .setFontWeight('bold');
-  }
+  const dateCell = sheet.getRange(titleRow, lastColumn, 1, 1);
+  dateCell.setFormula(`=${cols.dateLetter}${dataRow}`);
+  dateCell
+    .setFontFamily('Public Sans')
+    .setFontSize(10)
+    .setFontColor('#5B6472')
+    .setHorizontalAlignment('right')
+    .setVerticalAlignment('middle');
 
-  const statusValues = sheet.getRange(firstDataRow, statusCol, numDataRows, 1).getValues();
+  // --- Meta row: venue · organisation ---
+  const metaRange = sheet.getRange(metaRow, 2, 1, lastColumn - 1);
+  metaRange.merge();
+  sheet.getRange(metaRow, 2).setFormula(
+    `=${cols.venueLetter}${dataRow}&IF(AND(${cols.venueLetter}${dataRow}<>"",${cols.orgLetter}${dataRow}<>"")," · ","")&${cols.orgLetter}${dataRow}`
+  );
+  metaRange
+    .setFontFamily('Public Sans')
+    .setFontSize(10)
+    .setFontColor('#5B6472')
+    .setVerticalAlignment('middle');
 
-  statusValues.forEach((row, i) => {
-    const text = String(row[0] || '');
-    const style = STATUS_STYLES_.find(s => text.indexOf(s.startsWith) === 0);
-    const accent = style ? style.accent : '#D9D9D9';
+  // --- Description row (+ TAU Notes, if present) ---
+  const descRange = sheet.getRange(descRow, 2, 1, lastColumn - 1);
+  descRange.merge();
+  const notesFormula = cols.notesLetter
+    ? `&IF(${cols.notesLetter}${dataRow}<>"",CHAR(10)&"TAU notes: "&${cols.notesLetter}${dataRow},"")`
+    : '';
+  sheet.getRange(descRow, 2).setFormula(`=${cols.descLetter}${dataRow}${notesFormula}`);
+  descRange
+    .setFontFamily('Public Sans')
+    .setFontSize(10)
+    .setFontColor('#3B4354')
+    .setWrap(true)
+    .setVerticalAlignment('top');
 
-    sheet.getRange(firstDataRow + i, 1, 1, lastColumn)
-      .setBorder(null, true, null, null, null, null, accent, SpreadsheetApp.BorderStyle.SOLID_THICK);
-  });
+  // --- Card shell: white surface + soft outer border only (no internal
+  // grid lines), so this reads as one floating block, not table rows ---
+  const cardRange = sheet.getRange(titleRow, 1, 3, lastColumn);
+  cardRange.setBackground('#FFFFFF');
+  cardRange.setBorder(true, true, true, true, false, false, '#E3E7EF', SpreadsheetApp.BorderStyle.SOLID);
 
-  // Guarded: autoResizeRows/getRowHeight availability has varied across
-  // Apps Script API versions — a gap here shouldn't break everything else
-  // that already applied successfully above.
-  try {
-    sheet.autoResizeRows(firstDataRow, numDataRows);
+  sheet.setRowHeight(titleRow, 26);
+  sheet.setRowHeight(metaRow, 20);
+  sheet.setRowHeight(descRow, 42);
+  sheet.setRowHeight(spacerRow, 10);
 
-    // autoResizeRows tends to run a little tight for wrapped multi-line
-    // notes/descriptions — pad each row height slightly so text has room
-    // to breathe like a card, not a cramped table cell.
-    for (let r = firstDataRow; r < firstDataRow + numDataRows; r++) {
-      const current = sheet.getRowHeight(r);
-      sheet.setRowHeight(r, current + 14);
-    }
-  } catch (err) {
-    console.error('Row auto-resize skipped: ' + err.message);
-  }
+  // Spacer row: matches the page backdrop, no border — the whitespace
+  // gap between one card and the next.
+  sheet.getRange(spacerRow, 1, 1, lastColumn)
+    .setBackground(CARD_CANVAS_BG_)
+    .setBorder(false, false, false, false, false, false);
+
+  return spineRange;
+}
+
+
+/** Reads the row-count of the previously generated card block, or 0. */
+function getCardBlockRowCount_(sheet) {
+  const entries = sheet.createDeveloperMetadataFinder().withKey(CARD_META_KEY_).find();
+  if (entries.length === 0) return 0;
+  return parseInt(entries[0].getValue(), 10) || 0;
+}
+
+
+/** Stores the row-count of the just-generated card block, replacing any previous entry. */
+function setCardBlockRowCount_(sheet, count) {
+  sheet.createDeveloperMetadataFinder().withKey(CARD_META_KEY_).find()
+    .forEach(entry => entry.remove());
+  sheet.addDeveloperMetadata(CARD_META_KEY_, String(count));
 }
 
 
 /**
- * Inserts the dark masthead banner + live stat-tile rows above the
+ * Inserts the blue masthead banner + live stat-tile rows above the
  * existing header, once. Detects an already-inserted masthead via the
  * "TAU EVENTS" marker in A1 so re-running this is a no-op for structure
  * (only the formulas/formatting below get refreshed).
@@ -299,20 +463,21 @@ function ensureUpcomingEventsMasthead_(sheet) {
   const nameColLetter = columnToLetter_(nameHeaderCol > 0 ? nameHeaderCol : 2);
   const firstDataRow = headerRow + 1;
 
-  // --- Row 1: banner ---
+  // --- Row 1: banner (blue — the primary heading colour) ---
   const bannerRange = sheet.getRange(1, 1, 1, lastColumn);
   bannerRange.merge();
   sheet.getRange(1, 1).setFormula(
     '="' + MASTHEAD_MARKER_ + '   ·   Executive Summary — The Arts Unit   ·   As of " & TEXT(NOW(), "ddd d mmm yyyy")'
   );
   bannerRange
-    .setBackground(BRAND_MAROON_)
+    .setBackground(BRAND_BLUE_)
     .setFontColor(BRAND_BANNER_TEXT_)
     .setFontWeight('bold')
     .setFontSize(15)
     .setFontFamily('Fraunces')
     .setHorizontalAlignment('left')
-    .setVerticalAlignment('middle');
+    .setVerticalAlignment('middle')
+    .setBorder(null, null, true, null, null, null, BRAND_MAROON_, SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
   sheet.setRowHeight(1, 38);
 
   // --- Rows 2–3: stat tiles (number, then label underneath) ---
@@ -334,7 +499,7 @@ function ensureUpcomingEventsMasthead_(sheet) {
     sheet.getRange(2, group.startCol).setFormula(tile.formula);
     numberCell
       .setBackground(BRAND_TILE_BG_)
-      .setFontColor(BRAND_MAROON_DEEP_)
+      .setFontColor(BRAND_BLUE_DEEP_)
       .setFontWeight('bold')
       .setFontSize(22)
       .setFontFamily('Fraunces')
@@ -472,16 +637,4 @@ function setConditionalFormatRulesForRange_(sheet, range, newRules) {
   );
 
   sheet.setConditionalFormatRules(remainingRules.concat(newRules));
-}
-
-
-/**
- * Applies light alternating row shading to a range, replacing any
- * existing banding on the sheet so this stays idempotent.
- */
-function applyRowBanding_(sheet, range) {
-  range.getBandings().forEach(banding => banding.remove());
-
-  const banding = range.applyRowBanding(SpreadsheetApp.BandingTheme.LIGHT_GREY, true, false);
-  banding.setFirstRowColor('#FFFFFF').setSecondRowColor('#F5F7FA');
 }
