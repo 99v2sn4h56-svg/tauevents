@@ -17,25 +17,29 @@ const MASTHEAD_MARKER_ = 'TAU EVENTS';
 
 // Blue-forward brand palette. Blue is the primary/heading colour; maroon
 // is kept only as a minimal secondary accent (a thin rule under the
-// banner) rather than a competing second "main" colour.
+// banner) rather than a competing second "main" colour. One typeface
+// throughout (Public Sans) — hierarchy comes from size/weight/colour,
+// not from mixing a display serif in.
 const BRAND_BLUE_ = '#2E5090';        // masthead banner background (primary)
-const BRAND_BLUE_DEEP_ = '#1B3968';   // stat tile numbers + card event-name text
+const BRAND_BLUE_DEEP_ = '#1F3B66';   // stat tile numbers / accents
 const BRAND_MAROON_ = '#5C1B2E';      // secondary accent only — banner underline rule
 const BRAND_BANNER_TEXT_ = '#EDF1F9'; // light blue-white, reads on the blue banner
-const BRAND_TILE_BG_ = '#EEF2F8';     // cool light blue-grey stat tile background
-const BRAND_TILE_LABEL_ = '#51607A';  // muted blue-grey label text
+const BRAND_TILE_RULE_ = '#C7D6EE';   // thin underline beneath each stat tile — no filled box
+const BRAND_TILE_LABEL_ = '#5B6472';  // muted grey label text
 const CARD_CANVAS_BG_ = '#F4F6FB';    // soft backdrop the cards float on, replacing table gridlines
+const CARD_TEXT_PRIMARY_ = '#1F2937'; // event name colour — neutral ink, not brand blue
 
 // Status colours are a separate, reserved palette — never the brand
 // blue/maroon — so a status is always readable as itself, not as "part
-// of the theme."
+// of the theme." Soft tinted background + matching darker text, like a
+// modern tag/chip, rather than a solid saturated fill.
 const STATUS_STYLES_ = [
-  { startsWith: '1.',                 background: '#FCE8B2', color: '#7F5B00', accent: '#D9A400' }, // Request received
-  { startsWith: '2.',                 background: '#3C78D8', color: '#FFFFFF', accent: '#3C78D8' }, // Planning
-  { startsWith: '3.',                 background: '#4C9959', color: '#FFFFFF', accent: '#3F8F52' }, // Completed
-  { startsWith: 'Declined',           background: '#434B54', color: '#FFFFFF', accent: '#6B7280' },
-  { startsWith: 'Forwarded contacts', background: '#0F9D6F', color: '#FFFFFF', accent: '#0F9D6F' },
-  { startsWith: 'Cancelled',          background: '#A31515', color: '#FFFFFF', accent: '#A31515' }
+  { startsWith: '1.',                 background: '#FCEFCB', color: '#8A5D07' }, // Request received
+  { startsWith: '2.',                 background: '#DCE6FA', color: '#2E5090' }, // Planning
+  { startsWith: '3.',                 background: '#DCF0E1', color: '#227A45' }, // Completed
+  { startsWith: 'Declined',           background: '#E7E9ED', color: '#4B5563' },
+  { startsWith: 'Forwarded contacts', background: '#D6F3E9', color: '#0F7A57' },
+  { startsWith: 'Cancelled',          background: '#FADBDB', color: '#A31515' }
 ];
 
 // Card layout: 3 content rows per event (title+date / venue·org / description)
@@ -332,8 +336,12 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
  * entirely from live formulas pointing back at `dataRow` (the hidden
  * flat-table row for this event) — never copied values, so the card
  * always reflects whatever is in the data row as of the last refresh.
- * Returns the merged status-spine range so the caller can batch all
- * cards' spines into one set of conditional format rules.
+ * Every formula is wrapped in TO_TEXT() so a hyperlinked source cell
+ * (e.g. an event name Code.js has linked to its generated doc) shows
+ * as plain text here — this card controls its own look, not whatever
+ * rich formatting happens to live on the source cell.
+ * Returns the status-tag range so the caller can batch all cards' tags
+ * into one set of conditional format rules.
  */
 function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
   const titleRow = top;
@@ -341,11 +349,12 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
   const descRow = top + 2;
   const spacerRow = top + 3;
 
-  // --- Left spine: status badge, spanning the full card height ---
-  const spineRange = sheet.getRange(titleRow, 1, 3, 1);
-  spineRange.merge();
-  sheet.getRange(titleRow, 1).setFormula(`=${cols.statusLetter}${dataRow}`);
-  spineRange
+  // --- Status tag: small soft-tinted chip, title row only — not a
+  // solid block running the height of the card ---
+  const tagRange = sheet.getRange(titleRow, 1, 1, 1);
+  tagRange.setFormula(`=REGEXREPLACE(TO_TEXT(${cols.statusLetter}${dataRow}),"^\\d+\\.\\s*","")`);
+  tagRange
+    .setBackground('#FFFFFF')
     .setFontFamily('Public Sans')
     .setFontSize(9)
     .setFontWeight('bold')
@@ -353,23 +362,26 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
     .setVerticalAlignment('middle')
     .setWrap(true);
 
-  // --- Title row: big event name + date, right-aligned ---
+  // Rows 2–3 of column A stay blank canvas — no vertical colour bar.
+  sheet.getRange(metaRow, 1, 2, 1).setBackground(CARD_CANVAS_BG_);
+
+  // --- Title row: event name + date, right-aligned ---
   const nameRange = sheet.getRange(titleRow, 2, 1, lastColumn - 2);
   nameRange.merge();
-  sheet.getRange(titleRow, 2).setFormula(`=${cols.nameLetter}${dataRow}`);
+  sheet.getRange(titleRow, 2).setFormula(`=TO_TEXT(${cols.nameLetter}${dataRow})`);
   nameRange
-    .setFontFamily('Fraunces')
-    .setFontSize(13)
+    .setFontFamily('Public Sans')
+    .setFontSize(12)
     .setFontWeight('bold')
-    .setFontColor(BRAND_BLUE_DEEP_)
+    .setFontColor(CARD_TEXT_PRIMARY_)
     .setVerticalAlignment('middle');
 
   const dateCell = sheet.getRange(titleRow, lastColumn, 1, 1);
-  dateCell.setFormula(`=${cols.dateLetter}${dataRow}`);
+  dateCell.setFormula(`=TO_TEXT(${cols.dateLetter}${dataRow})`);
   dateCell
     .setFontFamily('Public Sans')
-    .setFontSize(10)
-    .setFontColor('#5B6472')
+    .setFontSize(9)
+    .setFontColor('#8A93A6')
     .setHorizontalAlignment('right')
     .setVerticalAlignment('middle');
 
@@ -377,38 +389,37 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
   const metaRange = sheet.getRange(metaRow, 2, 1, lastColumn - 1);
   metaRange.merge();
   sheet.getRange(metaRow, 2).setFormula(
-    `=${cols.venueLetter}${dataRow}&IF(AND(${cols.venueLetter}${dataRow}<>"",${cols.orgLetter}${dataRow}<>"")," · ","")&${cols.orgLetter}${dataRow}`
+    `=TO_TEXT(${cols.venueLetter}${dataRow})&IF(AND(${cols.venueLetter}${dataRow}<>"",${cols.orgLetter}${dataRow}<>"")," · ","")&TO_TEXT(${cols.orgLetter}${dataRow})`
   );
   metaRange
     .setFontFamily('Public Sans')
-    .setFontSize(10)
-    .setFontColor('#5B6472')
+    .setFontSize(9)
+    .setFontColor('#6B7280')
     .setVerticalAlignment('middle');
 
   // --- Description row (+ TAU Notes, if present) ---
   const descRange = sheet.getRange(descRow, 2, 1, lastColumn - 1);
   descRange.merge();
   const notesFormula = cols.notesLetter
-    ? `&IF(${cols.notesLetter}${dataRow}<>"",CHAR(10)&"TAU notes: "&${cols.notesLetter}${dataRow},"")`
+    ? `&IF(${cols.notesLetter}${dataRow}<>"",CHAR(10)&"TAU notes: "&TO_TEXT(${cols.notesLetter}${dataRow}),"")`
     : '';
-  sheet.getRange(descRow, 2).setFormula(`=${cols.descLetter}${dataRow}${notesFormula}`);
+  sheet.getRange(descRow, 2).setFormula(`=TO_TEXT(${cols.descLetter}${dataRow})${notesFormula}`);
   descRange
     .setFontFamily('Public Sans')
-    .setFontSize(10)
+    .setFontSize(9.5)
     .setFontColor('#3B4354')
     .setWrap(true)
     .setVerticalAlignment('top');
 
-  // --- Card shell: white surface + soft outer border only (no internal
-  // grid lines), so this reads as one floating block, not table rows ---
-  const cardRange = sheet.getRange(titleRow, 1, 3, lastColumn);
-  cardRange.setBackground('#FFFFFF');
-  cardRange.setBorder(true, true, true, true, false, false, '#E3E7EF', SpreadsheetApp.BorderStyle.SOLID);
+  // --- Card surface: plain white, no border — the white-on-grey
+  // contrast against the canvas is what reads as a card, not a ruled
+  // box, so this stays free of the "boxed dialog" look ---
+  sheet.getRange(titleRow, 2, 3, lastColumn - 1).setBackground('#FFFFFF');
 
-  sheet.setRowHeight(titleRow, 26);
-  sheet.setRowHeight(metaRow, 20);
-  sheet.setRowHeight(descRow, 42);
-  sheet.setRowHeight(spacerRow, 10);
+  sheet.setRowHeight(titleRow, 28);
+  sheet.setRowHeight(metaRow, 18);
+  sheet.setRowHeight(descRow, 40);
+  sheet.setRowHeight(spacerRow, 14);
 
   // Spacer row: matches the page backdrop, no border — the whitespace
   // gap between one card and the next.
@@ -416,7 +427,7 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
     .setBackground(CARD_CANVAS_BG_)
     .setBorder(false, false, false, false, false, false);
 
-  return spineRange;
+  return tagRange;
 }
 
 
@@ -473,12 +484,12 @@ function ensureUpcomingEventsMasthead_(sheet) {
     .setBackground(BRAND_BLUE_)
     .setFontColor(BRAND_BANNER_TEXT_)
     .setFontWeight('bold')
-    .setFontSize(15)
-    .setFontFamily('Fraunces')
+    .setFontSize(13)
+    .setFontFamily('Public Sans')
     .setHorizontalAlignment('left')
     .setVerticalAlignment('middle')
-    .setBorder(null, null, true, null, null, null, BRAND_MAROON_, SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
-  sheet.setRowHeight(1, 38);
+    .setBorder(null, null, true, null, null, null, BRAND_MAROON_, SpreadsheetApp.BorderStyle.SOLID);
+  sheet.setRowHeight(1, 34);
 
   // --- Rows 2–3: stat tiles (number, then label underneath) ---
   const groups = splitColumnsIntoGroups_(lastColumn, 4);
@@ -498,30 +509,35 @@ function ensureUpcomingEventsMasthead_(sheet) {
     numberCell.merge();
     sheet.getRange(2, group.startCol).setFormula(tile.formula);
     numberCell
-      .setBackground(BRAND_TILE_BG_)
+      .setBackground('#FFFFFF')
       .setFontColor(BRAND_BLUE_DEEP_)
       .setFontWeight('bold')
-      .setFontSize(22)
-      .setFontFamily('Fraunces')
+      .setFontSize(19)
+      .setFontFamily('Public Sans')
       .setHorizontalAlignment('center')
-      .setVerticalAlignment('middle')
+      .setVerticalAlignment('bottom')
       .setNumberFormat('0');
 
     const labelCell = sheet.getRange(3, group.startCol, 1, group.span);
     labelCell.merge();
     sheet.getRange(3, group.startCol).setValue(tile.label);
     labelCell
-      .setBackground(BRAND_TILE_BG_)
+      .setBackground('#FFFFFF')
       .setFontColor(BRAND_TILE_LABEL_)
       .setFontWeight('normal')
-      .setFontSize(10)
+      .setFontSize(9)
       .setFontFamily('Public Sans')
       .setHorizontalAlignment('center')
       .setVerticalAlignment('top');
+
+    // Thin rule under the whole tile group instead of a filled box — a
+    // quieter, more contemporary way to separate the stats visually.
+    sheet.getRange(2, group.startCol, 2, group.span)
+      .setBorder(null, null, true, null, null, null, BRAND_TILE_RULE_, SpreadsheetApp.BorderStyle.SOLID);
   });
 
-  sheet.setRowHeight(2, 34);
-  sheet.setRowHeight(3, 20);
+  sheet.setRowHeight(2, 30);
+  sheet.setRowHeight(3, 18);
 }
 
 
