@@ -33,14 +33,19 @@ const CARD_TEXT_PRIMARY_ = '#1F2937'; // event name colour — neutral ink, not 
 // blue/maroon — so a status is always readable as itself, not as "part
 // of the theme." Soft tinted background + matching darker text, like a
 // modern tag/chip, rather than a solid saturated fill.
+//
+// These match against the CLEANED label (numeric prefix like "1. "
+// already stripped for display — see buildEventCard_) not the raw
+// sheet value, so they key off "Planning" / "Completed" etc.
 const STATUS_STYLES_ = [
-  { startsWith: '1.',                 background: '#FCEFCB', color: '#8A5D07' }, // Request received
-  { startsWith: '2.',                 background: '#DCE6FA', color: '#2E5090' }, // Planning
-  { startsWith: '3.',                 background: '#DCF0E1', color: '#227A45' }, // Completed
+  { startsWith: 'Request received',   background: '#FCEFCB', color: '#8A5D07' },
+  { startsWith: 'Planning',           background: '#DCE6FA', color: '#2E5090' },
+  { startsWith: 'Completed',          background: '#DCF0E1', color: '#227A45' },
   { startsWith: 'Declined',           background: '#E7E9ED', color: '#4B5563' },
   { startsWith: 'Forwarded contacts', background: '#D6F3E9', color: '#0F7A57' },
   { startsWith: 'Cancelled',          background: '#FADBDB', color: '#A31515' }
 ];
+const DATE_BADGE_BG_ = '#EAF0FB'; // soft blue tint for the per-event date badge
 
 // Card layout: 3 content rows per event (title+date / venue·org / description)
 // plus 1 blank spacer row, so consecutive cards read as separate blocks
@@ -283,15 +288,27 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
     notesLetter: notesCol ? columnToLetter_(notesCol) : null
   };
 
+  // Narrower fixed column widths so the cards read as a contained list,
+  // not a full-bleed document — column A is the date badge, B the
+  // status tag, C onward the text content.
+  sheet.setColumnWidth(1, 88);
+  sheet.setColumnWidth(2, 92);
+  for (let c = 3; c <= lastColumn; c++) {
+    sheet.setColumnWidth(c, 128);
+  }
+
   const totalCardRows = dataRowCount * CARD_ROWS_PER_EVENT_ + 1; // +1 footer instruction row
   sheet.insertRowsAfter(dataLastRow, totalCardRows);
 
-  const spineRanges = [];
+  const tagRanges = [];
+  const descRows = [];
 
   for (let i = 0; i < dataRowCount; i++) {
     const dataRow = headerRow + 1 + i;
     const cardTop = dataLastRow + 1 + i * CARD_ROWS_PER_EVENT_;
-    spineRanges.push(buildEventCard_(sheet, cardTop, dataRow, lastColumn, cols));
+    const built = buildEventCard_(sheet, cardTop, dataRow, lastColumn, cols);
+    tagRanges.push(built.tagRange);
+    descRows.push(built.descRow);
   }
 
   const statusRules = STATUS_STYLES_.map(style =>
@@ -299,10 +316,24 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
       .whenTextStartsWith(style.startsWith)
       .setBackground(style.background)
       .setFontColor(style.color)
-      .setRanges(spineRanges)
+      .setRanges(tagRanges)
       .build()
   );
   sheet.setConditionalFormatRules(sheet.getConditionalFormatRules().concat(statusRules));
+
+  // Auto-fit each description row to its actual wrapped content, then put
+  // the spacer rows' deliberate height back (auto-resize would otherwise
+  // collapse those blank rows to a default height and undo the gaps
+  // between cards).
+  try {
+    descRows.forEach(row => sheet.autoResizeRows(row, 1));
+  } catch (err) {
+    console.error('Description row auto-resize skipped: ' + err.message);
+  }
+  for (let i = 0; i < dataRowCount; i++) {
+    const spacerRow = dataLastRow + 1 + i * CARD_ROWS_PER_EVENT_ + 3;
+    sheet.setRowHeight(spacerRow, 14);
+  }
 
   const footerRow = dataLastRow + 1 + dataRowCount * CARD_ROWS_PER_EVENT_;
   const footerRange = sheet.getRange(footerRow, 1, 1, lastColumn);
@@ -340,6 +371,13 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
  * (e.g. an event name Code.js has linked to its generated doc) shows
  * as plain text here — this card controls its own look, not whatever
  * rich formatting happens to live on the source cell.
+ *
+ * Layout, left to right: a dedicated date badge (its own tinted block,
+ * spanning the card's full height — the "clear date card" per event),
+ * then a small status tag on the title row, then the event content
+ * (name / venue·org / description), all left-aligned like a normal
+ * list item rather than centred like a printed page.
+ *
  * Returns the status-tag range so the caller can batch all cards' tags
  * into one set of conditional format rules.
  */
@@ -348,77 +386,88 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
   const metaRow = top + 1;
   const descRow = top + 2;
   const spacerRow = top + 3;
+  const contentCol = 3; // column C onward — column A is the date badge, B the status tag
+  const contentWidth = lastColumn - contentCol + 1;
+
+  // --- Date badge: its own tinted block, spanning the full card height —
+  // the clear per-event date marker, read before anything else ---
+  const dateRange = sheet.getRange(titleRow, 1, 3, 1);
+  dateRange.merge();
+  sheet.getRange(titleRow, 1).setFormula(`=TO_TEXT(${cols.dateLetter}${dataRow})`);
+  dateRange
+    .setBackground(DATE_BADGE_BG_)
+    .setFontFamily('Public Sans')
+    .setFontSize(10)
+    .setFontWeight('bold')
+    .setFontColor(BRAND_BLUE_DEEP_)
+    .setHorizontalAlignment('center')
+    .setVerticalAlignment('middle')
+    .setWrap(true);
 
   // --- Status tag: small soft-tinted chip, title row only — not a
   // solid block running the height of the card ---
-  const tagRange = sheet.getRange(titleRow, 1, 1, 1);
+  const tagRange = sheet.getRange(titleRow, 2, 1, 1);
   tagRange.setFormula(`=REGEXREPLACE(TO_TEXT(${cols.statusLetter}${dataRow}),"^\\d+\\.\\s*","")`);
   tagRange
     .setBackground('#FFFFFF')
     .setFontFamily('Public Sans')
-    .setFontSize(9)
+    .setFontSize(8.5)
     .setFontWeight('bold')
     .setHorizontalAlignment('center')
     .setVerticalAlignment('middle')
     .setWrap(true);
 
-  // Rows 2–3 of column A stay blank canvas — no vertical colour bar.
-  sheet.getRange(metaRow, 1, 2, 1).setBackground(CARD_CANVAS_BG_);
+  // Meta/description rows of the status column stay blank canvas.
+  sheet.getRange(metaRow, 2, 2, 1).setBackground(CARD_CANVAS_BG_);
 
-  // --- Title row: event name + date, right-aligned ---
-  const nameRange = sheet.getRange(titleRow, 2, 1, lastColumn - 2);
+  // --- Title row: event name, left-aligned ---
+  const nameRange = sheet.getRange(titleRow, contentCol, 1, contentWidth);
   nameRange.merge();
-  sheet.getRange(titleRow, 2).setFormula(`=TO_TEXT(${cols.nameLetter}${dataRow})`);
+  sheet.getRange(titleRow, contentCol).setFormula(`=TO_TEXT(${cols.nameLetter}${dataRow})`);
   nameRange
     .setFontFamily('Public Sans')
     .setFontSize(12)
     .setFontWeight('bold')
     .setFontColor(CARD_TEXT_PRIMARY_)
+    .setHorizontalAlignment('left')
     .setVerticalAlignment('middle');
 
-  const dateCell = sheet.getRange(titleRow, lastColumn, 1, 1);
-  dateCell.setFormula(`=TO_TEXT(${cols.dateLetter}${dataRow})`);
-  dateCell
-    .setFontFamily('Public Sans')
-    .setFontSize(9)
-    .setFontColor('#8A93A6')
-    .setHorizontalAlignment('right')
-    .setVerticalAlignment('middle');
-
-  // --- Meta row: venue · organisation ---
-  const metaRange = sheet.getRange(metaRow, 2, 1, lastColumn - 1);
+  // --- Meta row: venue · organisation, left-aligned ---
+  const metaRange = sheet.getRange(metaRow, contentCol, 1, contentWidth);
   metaRange.merge();
-  sheet.getRange(metaRow, 2).setFormula(
+  sheet.getRange(metaRow, contentCol).setFormula(
     `=TO_TEXT(${cols.venueLetter}${dataRow})&IF(AND(${cols.venueLetter}${dataRow}<>"",${cols.orgLetter}${dataRow}<>"")," · ","")&TO_TEXT(${cols.orgLetter}${dataRow})`
   );
   metaRange
     .setFontFamily('Public Sans')
     .setFontSize(9)
     .setFontColor('#6B7280')
+    .setHorizontalAlignment('left')
     .setVerticalAlignment('middle');
 
-  // --- Description row (+ TAU Notes, if present) ---
-  const descRange = sheet.getRange(descRow, 2, 1, lastColumn - 1);
+  // --- Description row (+ TAU Notes, if present), left-aligned ---
+  const descRange = sheet.getRange(descRow, contentCol, 1, contentWidth);
   descRange.merge();
   const notesFormula = cols.notesLetter
     ? `&IF(${cols.notesLetter}${dataRow}<>"",CHAR(10)&"TAU notes: "&TO_TEXT(${cols.notesLetter}${dataRow}),"")`
     : '';
-  sheet.getRange(descRow, 2).setFormula(`=TO_TEXT(${cols.descLetter}${dataRow})${notesFormula}`);
+  sheet.getRange(descRow, contentCol).setFormula(`=TO_TEXT(${cols.descLetter}${dataRow})${notesFormula}`);
   descRange
     .setFontFamily('Public Sans')
     .setFontSize(9.5)
     .setFontColor('#3B4354')
-    .setWrap(true)
-    .setVerticalAlignment('top');
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('top')
+    .setWrap(true);
 
   // --- Card surface: plain white, no border — the white-on-grey
   // contrast against the canvas is what reads as a card, not a ruled
   // box, so this stays free of the "boxed dialog" look ---
-  sheet.getRange(titleRow, 2, 3, lastColumn - 1).setBackground('#FFFFFF');
+  sheet.getRange(titleRow, contentCol, 3, contentWidth).setBackground('#FFFFFF');
 
-  sheet.setRowHeight(titleRow, 28);
+  sheet.setRowHeight(titleRow, 26);
   sheet.setRowHeight(metaRow, 18);
-  sheet.setRowHeight(descRow, 40);
+  sheet.setRowHeight(descRow, 34);
   sheet.setRowHeight(spacerRow, 14);
 
   // Spacer row: matches the page backdrop, no border — the whitespace
@@ -427,7 +476,7 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
     .setBackground(CARD_CANVAS_BG_)
     .setBorder(false, false, false, false, false, false);
 
-  return tagRange;
+  return { tagRange, descRow };
 }
 
 
