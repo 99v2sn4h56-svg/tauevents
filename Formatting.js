@@ -15,18 +15,21 @@ const UPCOMING_EVENTS_SHEET_NAME = 'TAU Upcoming Events';
 const STATUS_HEADER = 'Status';
 const MASTHEAD_MARKER_ = 'TAU EVENTS';
 
-// Matches the palette used in the "TAU Run of Show" concept dashboard,
-// adapted for a white-background data sheet instead of a dark page.
-const BRAND_INK_ = '#100e13';
-const BRAND_GOLD_ = '#b8862f';
+// Blue / maroon brand palette for the masthead and stat tiles.
+const BRAND_MAROON_ = '#5C1B2E';   // banner background
+const BRAND_MAROON_DEEP_ = '#3E1220'; // stat number colour (deeper, reads on light bg)
+const BRAND_BLUE_ = '#2E5090';     // secondary accent (used sparingly)
+const BRAND_BANNER_TEXT_ = '#E7ECF5'; // light blue-white, reads on maroon
+const BRAND_TILE_BG_ = '#EEF2F8';  // cool light blue-grey stat tile background
+const BRAND_TILE_LABEL_ = '#51607A'; // muted blue-grey label text
 
 const STATUS_STYLES_ = [
-  { startsWith: '1.',                 background: '#FCE8B2', color: '#7F5B00' }, // Request received
-  { startsWith: '2.',                 background: '#3C78D8', color: '#FFFFFF' }, // Planning
-  { startsWith: '3.',                 background: '#4C9959', color: '#FFFFFF' }, // Completed
-  { startsWith: 'Declined',           background: '#434B54', color: '#FFFFFF' },
-  { startsWith: 'Forwarded contacts', background: '#0F9D6F', color: '#FFFFFF' },
-  { startsWith: 'Cancelled',          background: '#A31515', color: '#FFFFFF' }
+  { startsWith: '1.',                 background: '#FCE8B2', color: '#7F5B00', accent: '#D9A400' }, // Request received
+  { startsWith: '2.',                 background: '#3C78D8', color: '#FFFFFF', accent: '#3C78D8' }, // Planning
+  { startsWith: '3.',                 background: '#4C9959', color: '#FFFFFF', accent: '#3F8F52' }, // Completed
+  { startsWith: 'Declined',           background: '#434B54', color: '#FFFFFF', accent: '#6B7280' },
+  { startsWith: 'Forwarded contacts', background: '#0F9D6F', color: '#FFFFFF', accent: '#0F9D6F' },
+  { startsWith: 'Cancelled',          background: '#A31515', color: '#FFFFFF', accent: '#A31515' }
 ];
 
 
@@ -210,9 +213,62 @@ function applyUpcomingEventsFormatting_(sheet) {
   dataRange.setFontFamily('Public Sans');
 
   applyRowBanding_(sheet, dataRange);
+  applyEventCardStyling_(sheet, headerRow, lastRow, lastColumn, statusCol);
 
   sheet.setFrozenRows(headerRow);
   sheet.setFrozenColumns(statusCol);
+}
+
+
+/**
+ * Makes each data row read as its own event "card" rather than a plain
+ * table row: a bold, larger event name, generous auto-fit row height,
+ * and a coloured left-edge accent stripe matching that row's status —
+ * the closest a spreadsheet grid can get to the mockup's timeline cards
+ * without breaking the row-per-event data structure.
+ */
+function applyEventCardStyling_(sheet, headerRow, lastRow, lastColumn, statusCol) {
+  const firstDataRow = headerRow + 1;
+  const numDataRows = lastRow - headerRow;
+
+  if (numDataRows <= 0) return;
+
+  const headers = sheet.getRange(headerRow, 1, 1, lastColumn).getValues()[0];
+  const nameCol = findHeaderColumn_(headers, 'Name of Event:');
+
+  if (nameCol > 0) {
+    sheet.getRange(firstDataRow, nameCol, numDataRows, 1)
+      .setFontSize(12)
+      .setFontWeight('bold');
+  }
+
+  const statusValues = sheet.getRange(firstDataRow, statusCol, numDataRows, 1).getValues();
+
+  statusValues.forEach((row, i) => {
+    const text = String(row[0] || '');
+    const style = STATUS_STYLES_.find(s => text.indexOf(s.startsWith) === 0);
+    const accent = style ? style.accent : '#D9D9D9';
+
+    sheet.getRange(firstDataRow + i, 1, 1, lastColumn)
+      .setBorder(null, true, null, null, null, null, accent, SpreadsheetApp.BorderStyle.SOLID_THICK);
+  });
+
+  // Guarded: autoResizeRows/getRowHeight availability has varied across
+  // Apps Script API versions — a gap here shouldn't break everything else
+  // that already applied successfully above.
+  try {
+    sheet.autoResizeRows(firstDataRow, numDataRows);
+
+    // autoResizeRows tends to run a little tight for wrapped multi-line
+    // notes/descriptions — pad each row height slightly so text has room
+    // to breathe like a card, not a cramped table cell.
+    for (let r = firstDataRow; r < firstDataRow + numDataRows; r++) {
+      const current = sheet.getRowHeight(r);
+      sheet.setRowHeight(r, current + 14);
+    }
+  } catch (err) {
+    console.error('Row auto-resize skipped: ' + err.message);
+  }
 }
 
 
@@ -250,8 +306,8 @@ function ensureUpcomingEventsMasthead_(sheet) {
     '="' + MASTHEAD_MARKER_ + '   ·   Executive Summary — The Arts Unit   ·   As of " & TEXT(NOW(), "ddd d mmm yyyy")'
   );
   bannerRange
-    .setBackground(BRAND_INK_)
-    .setFontColor(BRAND_GOLD_)
+    .setBackground(BRAND_MAROON_)
+    .setFontColor(BRAND_BANNER_TEXT_)
     .setFontWeight('bold')
     .setFontSize(15)
     .setFontFamily('Fraunces')
@@ -263,7 +319,7 @@ function ensureUpcomingEventsMasthead_(sheet) {
   const groups = splitColumnsIntoGroups_(lastColumn, 4);
 
   const tiles = [
-    { label: 'Upcoming events',   formula: `=COUNTA(${nameColLetter}${firstDataRow}:${nameColLetter})` },
+    { label: 'Upcoming events',   formula: `=SUMPRODUCT(--ISTEXT(${nameColLetter}${firstDataRow}:${nameColLetter}${firstDataRow + 300}))` },
     { label: 'In planning',       formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"2.*")` },
     { label: 'Awaiting response', formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"1.*")` },
     { label: 'Completed',         formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"3.*")` }
@@ -277,8 +333,8 @@ function ensureUpcomingEventsMasthead_(sheet) {
     numberCell.merge();
     sheet.getRange(2, group.startCol).setFormula(tile.formula);
     numberCell
-      .setBackground('#F5F0E3')
-      .setFontColor(BRAND_INK_)
+      .setBackground(BRAND_TILE_BG_)
+      .setFontColor(BRAND_MAROON_DEEP_)
       .setFontWeight('bold')
       .setFontSize(22)
       .setFontFamily('Fraunces')
@@ -290,8 +346,8 @@ function ensureUpcomingEventsMasthead_(sheet) {
     labelCell.merge();
     sheet.getRange(3, group.startCol).setValue(tile.label);
     labelCell
-      .setBackground('#F5F0E3')
-      .setFontColor('#5F5744')
+      .setBackground(BRAND_TILE_BG_)
+      .setFontColor(BRAND_TILE_LABEL_)
       .setFontWeight('normal')
       .setFontSize(10)
       .setFontFamily('Public Sans')
