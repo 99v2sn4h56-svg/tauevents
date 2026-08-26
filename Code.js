@@ -1,9 +1,16 @@
 /************ CONFIG ************/
+//
+// Convention for this file: NEVER read or write the Requests sheet by a
+// hardcoded column number. Always look up columns by their header text
+// (see findHeaderColumn_ / getValueByNormalisedHeader_ / getOrCreateColumn_
+// below) so the script keeps working if columns get reordered or new
+// tracking columns get added to the sheet.
 
 const REQUESTS_SHEET_NAME = 'Requests';
 const TEMPLATE_SPREADSHEET_ID = '1PfGJGLYH6wpdw18XIKZp0Kc10LbspnVwsiV_AXfqkOM';
 const DESTINATION_FOLDER_ID = '1Hq3vMsEEQFHEx-69fEX5kZoZx3soXMjB';
 const FILE_NAME_PREFIX = 'Event Request - ';
+const STATUS_COLUMN_HEADER = 'Processing Status';
 
 const NOTIFICATION_EMAIL = 'TAUevents@det.nsw.edu.au,Sonja.Benson@det.nsw.edu.au,Lisa.Vandendolder@det.nsw.edu.au';
 
@@ -25,63 +32,184 @@ function setupEventRequestTrigger() {
 
 
 function createEventRequestSpreadsheet(e) {
-  const responseSpreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  const requestsSheet = responseSpreadsheet.getSheetByName(REQUESTS_SHEET_NAME);
-
+  // Captured first so it's available for error reporting even if
+  // everything else below fails.
   const submittedRow = e.range.getRow();
-  const lastColumn = requestsSheet.getLastColumn();
 
-  const headers = requestsSheet
-    .getRange(1, 1, 1, lastColumn)
-    .getValues()[0];
+  try {
+    const responseSpreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const requestsSheet = responseSpreadsheet.getSheetByName(REQUESTS_SHEET_NAME);
 
-  const rowData = requestsSheet
-    .getRange(submittedRow, 1, 1, lastColumn)
-    .getValues()[0];
-
-  const data = {};
-
-  headers.forEach((header, index) => {
-    if (header) {
-      data[String(header).trim()] = rowData[index];
+    if (!requestsSheet) {
+      throw new Error(`Sheet named "${REQUESTS_SHEET_NAME}" was not found.`);
     }
-  });
 
-  const eventName =
-    getValueByNormalisedHeader_(data, 'Name of Event:') ||
-    `Submission ${submittedRow}`;
+    const lastColumn = requestsSheet.getLastColumn();
 
-  const eventDate =
-    getValueByNormalisedHeader_(data, 'Event Date(s):') ||
-    '';
+    const headers = requestsSheet
+      .getRange(1, 1, 1, lastColumn)
+      .getValues()[0];
 
-  const formattedEventDate = formatEventDate_(eventDate);
+    const rowData = requestsSheet
+      .getRange(submittedRow, 1, 1, lastColumn)
+      .getValues()[0];
 
-  const folderName = `${eventName} - ${formattedEventDate}`;
-  const newFileName = `${FILE_NAME_PREFIX}${eventName}`;
+    const data = {};
 
-  const templateFile = DriveApp.getFileById(TEMPLATE_SPREADSHEET_ID);
-  const parentFolder = DriveApp.getFolderById(DESTINATION_FOLDER_ID);
+    headers.forEach((header, index) => {
+      if (header) {
+        data[String(header).trim()] = rowData[index];
+      }
+    });
 
-  const eventFolder = parentFolder.createFolder(folderName);
-  const copiedFile = templateFile.makeCopy(newFileName, eventFolder);
+    const eventName =
+      getValueByNormalisedHeader_(data, 'Name of Event:') ||
+      `Submission ${submittedRow}`;
 
-  const newSpreadsheet = SpreadsheetApp.openById(copiedFile.getId());
+    const eventDate =
+      getValueByNormalisedHeader_(data, 'Event Date(s):') ||
+      '';
 
-  populateTemplateByMatchingLabels_(newSpreadsheet, data);
-  addOriginalRequestTab_(newSpreadsheet, data);
+    const formattedEventDate = formatEventDate_(eventDate);
 
-  sendEventRequestEmail_(data, eventFolder, copiedFile);
+    const folderName = `${eventName} - ${formattedEventDate}`;
+    const newFileName = `${FILE_NAME_PREFIX}${eventName}`;
 
+    const templateFile = DriveApp.getFileById(TEMPLATE_SPREADSHEET_ID);
+    const parentFolder = DriveApp.getFolderById(DESTINATION_FOLDER_ID);
+
+    const eventFolder = parentFolder.createFolder(folderName);
+    const copiedFile = templateFile.makeCopy(newFileName, eventFolder);
+
+    const newSpreadsheet = SpreadsheetApp.openById(copiedFile.getId());
+
+    populateTemplateByMatchingLabels_(newSpreadsheet, data);
+    addOriginalRequestTab_(newSpreadsheet, data);
+
+    sendEventRequestEmail_(data, eventFolder, copiedFile);
+
+    writeBackHyperlink_(requestsSheet, headers, submittedRow, eventName, eventFolder.getUrl());
+    setRowStatus_(requestsSheet, headers, submittedRow, `Processed ${formatTimestamp_()}`);
+
+  } catch (err) {
+    handleProcessingError_(submittedRow, err);
+    // Re-throw so this still shows up as a failed execution in the
+    // Apps Script Executions log, not just as a quietly-handled error.
+    throw err;
+  }
+}
+
+
+/**
+ * Writes the "Name of Event:" cell in the Requests row as a link to the
+ * generated event folder. Column is found by header text, not position.
+ */
+function writeBackHyperlink_(requestsSheet, headers, submittedRow, eventName, folderUrl) {
   const eventNameColumn = findHeaderColumn_(headers, 'Name of Event:');
 
   if (eventNameColumn > 0) {
     requestsSheet
       .getRange(submittedRow, eventNameColumn)
       .setFormula(
-        `=HYPERLINK("${eventFolder.getUrl()}","${escapeFormulaText_(eventName)}")`
+        `=HYPERLINK("${folderUrl}","${escapeFormulaText_(eventName)}")`
       );
   }
+}
+
+
+/**
+ * Writes a human-readable status (success or error) into the
+ * STATUS_COLUMN_HEADER column for this row, creating that column by
+ * header name if it doesn't exist yet. Never assumes a fixed column
+ * number.
+ */
+function setRowStatus_(requestsSheet, headers, submittedRow, statusText) {
+  const statusColumn = getOrCreateColumn_(requestsSheet, headers, STATUS_COLUMN_HEADER);
+
+  requestsSheet
+    .getRange(submittedRow, statusColumn)
+    .setValue(statusText);
+}
+
+
+/**
+ * Finds a column by header text; if it isn't present, appends a new
+ * header with that name at the end of row 1 and returns its column
+ * index. Keeps the passed-in headers array in sync so repeated calls
+ * within the same run don't create duplicate columns.
+ */
+function getOrCreateColumn_(sheet, headers, headerName) {
+  const existingColumn = findHeaderColumn_(headers, headerName);
+
+  if (existingColumn > 0) {
+    return existingColumn;
+  }
+
+  const newColumn = headers.length + 1;
+  sheet.getRange(1, newColumn).setValue(headerName);
+  headers.push(headerName);
+
+  return newColumn;
+}
+
+
+/**
+ * Central error handler for a failed submission. Leaves a visible error
+ * note on the Requests row (best-effort — a failure here must not stop
+ * the alert email from going out) and emails the TAU notification list
+ * so a failed submission never just disappears into the execution logs.
+ */
+function handleProcessingError_(submittedRow, err) {
+  const message = (err && err.message) || String(err);
+
+  console.error(`Row ${submittedRow} failed to process: ${message}`, err && err.stack);
+
+  try {
+    const responseSpreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const requestsSheet = responseSpreadsheet.getSheetByName(REQUESTS_SHEET_NAME);
+
+    if (requestsSheet) {
+      const lastColumn = requestsSheet.getLastColumn();
+      const headers = requestsSheet
+        .getRange(1, 1, 1, lastColumn)
+        .getValues()[0];
+
+      setRowStatus_(requestsSheet, headers, submittedRow, `Error ${formatTimestamp_()}: ${message}`);
+    }
+  } catch (statusErr) {
+    console.error('Additionally failed to write the error status to the sheet:', statusErr);
+  }
+
+  sendProcessingFailureEmail_(submittedRow, message, err && err.stack);
+}
+
+
+function sendProcessingFailureEmail_(submittedRow, message, stack) {
+  const spreadsheetUrl = SpreadsheetApp.getActiveSpreadsheet().getUrl();
+  const subject = `⚠️ Event Request processing FAILED - row ${submittedRow}`;
+
+  const body = `An event request submission failed to process automatically and needs manual follow-up.
+
+Row: ${submittedRow}
+Sheet: ${spreadsheetUrl}
+
+Error: ${message}
+${stack ? '\nDetails:\n' + stack : ''}`;
+
+  MailApp.sendEmail({
+    to: NOTIFICATION_EMAIL,
+    subject: subject,
+    body: body
+  });
+}
+
+
+function formatTimestamp_() {
+  return Utilities.formatDate(
+    new Date(),
+    Session.getScriptTimeZone(),
+    'dd MMM yyyy HH:mm'
+  );
 }
 
 
