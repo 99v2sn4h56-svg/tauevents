@@ -49,7 +49,10 @@ const DATE_BADGE_BG_ = '#EAF0FB'; // soft blue tint for the per-event date badge
 // plus 1 blank spacer row, so consecutive cards read as separate blocks
 // floating on the canvas rather than adjoining table rows.
 const CARD_ROWS_PER_EVENT_ = 4;
-const CARD_META_KEY_ = 'tauCardBlockRowCount';
+// Distinctive leading text of the footer note left under the card block —
+// doubles as the marker rebuildEventCards_ searches for to find where a
+// previously generated card block starts (see getPriorCardBlockBoundary_).
+const FOOTER_MARKER_TEXT_ = '✎  Event details live in hidden rows';
 
 
 function onOpen() {
@@ -62,10 +65,43 @@ function onOpen() {
 
 
 function refreshAllFormatting() {
-  formatRequestsWorkflow();
-  formatUpcomingEventsSummary();
+  withUpcomingEventsLock_(() => {
+    formatRequestsWorkflow();
+    formatUpcomingEventsSummary();
 
-  SpreadsheetApp.getUi().alert('Formatting refreshed for "Requests" and "' + UPCOMING_EVENTS_SHEET_NAME + '".');
+    SpreadsheetApp.getUi().alert('Formatting refreshed for "Requests" and "' + UPCOMING_EVENTS_SHEET_NAME + '".');
+  });
+}
+
+
+/**
+ * Serialises anything that rebuilds the "TAU Upcoming Events" card block.
+ * rebuildEventCards_ figures out where the old card block starts by
+ * reading its own footer note, deletes from there down, then rebuilds —
+ * which only works if one run finishes (footer written) before the next
+ * one reads it. A double-click on a menu item (or Apps Script re-showing
+ * a menu before the previous run's UI.alert() has closed) can fire this
+ * twice almost simultaneously; without a lock, the second run reads the
+ * pre-rebuild footer while the first is still mid-rebuild, and the two
+ * executions' inserted rows stack instead of cleanly replacing one
+ * another. If the lock can't be acquired within 30s, fail loudly rather
+ * than silently racing.
+ */
+function withUpcomingEventsLock_(fn) {
+  const lock = LockService.getDocumentLock();
+  const gotLock = lock.tryLock(30000);
+  if (!gotLock) {
+    throw new Error(
+      'Another "TAU Upcoming Events" formatting run appears to already be in progress. ' +
+      'Wait a moment for it to finish and try again — running two at once is what causes ' +
+      'duplicated/stacked event cards.'
+    );
+  }
+  try {
+    fn();
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 
@@ -153,31 +189,38 @@ function formatUpcomingEventsSummary() {
  * touches the live sheet. Delete the copy from the tab bar when done.
  */
 function testUpcomingEventsFormattingOnCopy() {
-  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  const source = spreadsheet.getSheetByName(UPCOMING_EVENTS_SHEET_NAME);
+  withUpcomingEventsLock_(() => {
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const source = spreadsheet.getSheetByName(UPCOMING_EVENTS_SHEET_NAME);
 
-  if (!source) {
-    throw new Error(`Sheet named "${UPCOMING_EVENTS_SHEET_NAME}" was not found.`);
-  }
+    if (!source) {
+      throw new Error(`Sheet named "${UPCOMING_EVENTS_SHEET_NAME}" was not found.`);
+    }
 
-  const testName = UPCOMING_EVENTS_SHEET_NAME + ' TEST COPY';
-  const existingTestCopy = spreadsheet.getSheetByName(testName);
-  if (existingTestCopy) {
-    spreadsheet.deleteSheet(existingTestCopy); // start fresh each time this is run
-  }
+    const testName = UPCOMING_EVENTS_SHEET_NAME + ' TEST COPY';
+    const existingTestCopy = spreadsheet.getSheetByName(testName);
+    if (existingTestCopy) {
+      spreadsheet.deleteSheet(existingTestCopy); // start fresh each time this is run
+    }
 
-  const copy = source.copyTo(spreadsheet);
-  copy.setName(testName);
-  spreadsheet.setActiveSheet(copy);
+    const copy = source.copyTo(spreadsheet);
+    copy.setName(testName);
+    spreadsheet.setActiveSheet(copy);
 
-  applyUpcomingEventsFormatting_(copy);
+    // The freshly duplicated sheet's rows (including source's own footer
+    // note, if it had one) are laid out identically to source's, so
+    // rebuildEventCards_ can read that footer straight off the copy and
+    // correctly find/replace the copied-over card block on this very
+    // first run, instead of mistaking it for real data.
+    applyUpcomingEventsFormatting_(copy);
 
-  SpreadsheetApp.getUi().alert(
-    'Formatted "' + copy.getName() + '" — check it over. The real "' +
-    UPCOMING_EVENTS_SHEET_NAME + '" tab was not touched. Once it looks ' +
-    'right, run "Refresh sheet formatting" for real, then delete this ' +
-    'test copy tab.'
-  );
+    SpreadsheetApp.getUi().alert(
+      'Formatted "' + copy.getName() + '" — check it over. The real "' +
+      UPCOMING_EVENTS_SHEET_NAME + '" tab was not touched. Once it looks ' +
+      'right, run "Refresh sheet formatting" for real, then delete this ' +
+      'test copy tab.'
+    );
+  });
 }
 
 
@@ -231,19 +274,19 @@ function applyUpcomingEventsFormatting_(sheet) {
  * again to regenerate the cards — the footer note left at the bottom
  * of the card block says the same thing.
  *
- * Idempotent: the row-count of the previously generated card block is
- * stored as sheet developer metadata (survives row inserts elsewhere on
- * the sheet), so re-running this deletes the old card rows before
- * rebuilding rather than stacking duplicates or losing track of where
- * the real data ends and the generated cards begin.
+ * Idempotent: where the previously generated card block starts is read
+ * back from its own footer note (see getPriorCardBlockBoundary_), so
+ * re-running this deletes everything from there down before rebuilding,
+ * rather than stacking duplicates or losing track of where the real
+ * data ends and the generated cards begin.
  */
 function rebuildEventCards_(sheet, headerRow, statusCol) {
-  const previousCardRows = getCardBlockRowCount_(sheet);
   const priorLastRow = sheet.getLastRow();
-  const dataLastRow = previousCardRows > 0 ? priorLastRow - previousCardRows : priorLastRow;
+  const priorDataLastRow = getPriorCardBlockBoundary_(sheet);
+  const dataLastRow = priorDataLastRow > 0 ? priorDataLastRow : priorLastRow;
 
-  if (previousCardRows > 0) {
-    sheet.deleteRows(dataLastRow + 1, previousCardRows);
+  if (priorDataLastRow > 0 && priorLastRow > priorDataLastRow) {
+    sheet.deleteRows(priorDataLastRow + 1, priorLastRow - priorDataLastRow);
   }
 
   const lastColumn = sheet.getLastColumn();
@@ -251,7 +294,6 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
 
   if (dataRowCount <= 0) {
     setUpcomingEventsCountTile_(sheet, lastColumn, 0);
-    setCardBlockRowCount_(sheet, 0);
     return;
   }
 
@@ -303,8 +345,13 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
   // rather than re-implementing date parsing in Apps Script — those two
   // date-reading paths would otherwise be able to silently disagree. A
   // date that can't be parsed is KEPT, not hidden — never drop an event
-  // just because its date text is unusual.
-  const includedRowOffsets = getRecentOrUpcomingRowOffsets_(sheet, headerRow, dataRowCount, lastColumn, cols.dateLetter);
+  // just because its date text is unusual. Rows whose source cells are a
+  // spreadsheet error (e.g. a broken #REF! formula) are also dropped —
+  // those aren't real events, and rendering one as a fully-styled card
+  // (and counting it in the tile) is worse than just leaving it out of
+  // the list while it's still sitting there, unhidden-able, for fixing.
+  const included = getIncludedRowOffsets_(sheet, headerRow, dataRowCount, lastColumn, cols);
+  const includedRowOffsets = included.offsets;
   const visibleCount = includedRowOffsets.length;
 
   const totalCardRows = visibleCount * CARD_ROWS_PER_EVENT_ + 1; // +1 footer instruction row
@@ -375,14 +422,25 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
   const footerRange = sheet.getRange(footerRow, 1, 1, lastColumn);
   footerRange.setBorder(false, false, false, false, false, false);
   footerRange.merge();
-  const hiddenForAge = dataRowCount - visibleCount;
+  const errorCount = included.errorCount;
+  const hiddenForAge = dataRowCount - visibleCount - errorCount;
+  const asideParts = [];
+  if (hiddenForAge > 0) {
+    asideParts.push(
+      hiddenForAge + ' event' + (hiddenForAge === 1 ? '' : 's') + ' more than a week past its date ' +
+      (hiddenForAge === 1 ? 'is' : 'are') + ' not shown below, but still there in those rows'
+    );
+  }
+  if (errorCount > 0) {
+    asideParts.push(
+      errorCount + ' row' + (errorCount === 1 ? '' : 's') + " with a broken formula (showing an error like #REF!) " +
+      (errorCount === 1 ? 'is' : 'are') + ' also not shown — worth fixing directly in that hidden row'
+    );
+  }
   sheet.getRange(footerRow, 1).setValue(
     '✎  Event details live in hidden rows ' + headerRow + '–' + dataLastRow + ' above — unhide them to add ' +
     'or edit an event, then run TAU Tools → Refresh sheet formatting to update these cards.' +
-    (hiddenForAge > 0
-      ? ' (' + hiddenForAge + ' event' + (hiddenForAge === 1 ? '' : 's') + ' more than a week past its date ' +
-        (hiddenForAge === 1 ? 'is' : 'are') + " not shown below, but still there in those rows.)"
-      : '')
+    (asideParts.length > 0 ? ' (' + asideParts.join('; ') + '.)' : '')
   );
   footerRange
     .setBackground(CARD_CANVAS_BG_)
@@ -411,42 +469,63 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
   // actually shown below.
   setUpcomingEventsCountTile_(sheet, lastColumn, visibleCount);
 
-  setCardBlockRowCount_(sheet, totalCardRows);
+  // Nothing extra to store for next time — the footer row written above
+  // already says "hidden rows headerRow–dataLastRow", which is exactly
+  // what getPriorCardBlockBoundary_ reads back on the next run.
 }
 
 
 /**
- * Returns the (0-based, relative to headerRow+1) offsets of data rows
- * whose event date is today, in the future, or up to a week in the
- * past — i.e. every row EXCEPT ones more than a week stale. Parses via
- * a temporary formula column (same DATEVALUE approach the countdown
- * badge uses, cleared immediately after reading it back) so this can't
- * disagree with what the countdown itself shows. A date that fails to
- * parse is treated as 9999 days out — kept, never dropped, since we'd
- * rather show an odd date than silently lose a real event.
+ * Returns { offsets, errorCount } — offsets are the (0-based, relative
+ * to headerRow+1) positions of data rows to actually render as cards:
+ * every row EXCEPT ones more than a week stale, and except ones where a
+ * source cell is a spreadsheet error (e.g. a broken #REF! formula —
+ * TO_TEXT() of an error cell propagates the error rather than returning
+ * text, which is exactly how a #REF! row was showing up as a fully
+ * rendered "#REF!" card before this check existed). errorCount is how
+ * many rows got dropped for the error reason specifically, so the caller
+ * can report it separately from the age-based exclusions.
+ *
+ * Parses dates via a temporary formula column (same DATEVALUE approach
+ * the countdown badge uses, cleared immediately after reading it back)
+ * so this can't disagree with what the countdown itself shows. A date
+ * that fails to parse is treated as 9999 days out — kept, never
+ * dropped, since we'd rather show an odd date than silently lose a real
+ * event.
  */
-function getRecentOrUpcomingRowOffsets_(sheet, headerRow, dataRowCount, lastColumn, dateLetter) {
+function getIncludedRowOffsets_(sheet, headerRow, dataRowCount, lastColumn, cols) {
   const scratchCol = lastColumn + 2; // just past the real columns; these rows are hidden anyway
+  if (sheet.getMaxColumns() < scratchCol) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), scratchCol - sheet.getMaxColumns());
+  }
   const scratchRange = sheet.getRange(headerRow + 1, scratchCol, dataRowCount, 1);
+
+  const sourceCells = [cols.dateLetter, cols.nameLetter, cols.venueLetter, cols.orgLetter, cols.descLetter];
 
   const formulas = [];
   for (let i = 0; i < dataRowCount; i++) {
     const dataRow = headerRow + 1 + i;
-    formulas.push([
-      `=IFERROR(INT(DATEVALUE(REGEXREPLACE(TO_TEXT(${dateLetter}${dataRow}),"^[A-Za-z]+\\s*,\\s*","")))-INT(TODAY()),9999)`
-    ]);
+    const hasErrorExpr = 'OR(' + sourceCells.map(letter => `ISERROR(${letter}${dataRow})`).join(',') + ')';
+    const dayDiffExpr =
+      `IFERROR(INT(DATEVALUE(REGEXREPLACE(TO_TEXT(${cols.dateLetter}${dataRow}),"^[A-Za-z]+\\s*,\\s*","")))-INT(TODAY()),9999)`;
+    formulas.push([`=IF(${hasErrorExpr},"ERROR",${dayDiffExpr})`]);
   }
   scratchRange.setFormulas(formulas);
   SpreadsheetApp.flush();
 
-  const dayDiffs = scratchRange.getValues().map(row => row[0]);
+  const results = scratchRange.getValues().map(row => row[0]);
   scratchRange.clearContent();
 
   const offsets = [];
+  let errorCount = 0;
   for (let i = 0; i < dataRowCount; i++) {
-    if (dayDiffs[i] >= -7) offsets.push(i);
+    if (results[i] === 'ERROR') {
+      errorCount++;
+    } else if (results[i] >= -7) {
+      offsets.push(i);
+    }
   }
-  return offsets;
+  return { offsets, errorCount };
 }
 
 
@@ -636,19 +715,34 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
 }
 
 
-/** Reads the row-count of the previously generated card block, or 0. */
-function getCardBlockRowCount_(sheet) {
-  const entries = sheet.createDeveloperMetadataFinder().withKey(CARD_META_KEY_).find();
-  if (entries.length === 0) return 0;
-  return parseInt(entries[0].getValue(), 10) || 0;
-}
+/**
+ * Where the real (hidden) data ends and the previously generated card
+ * block starts, or 0 if there's no previous card block to find.
+ *
+ * This used to be tracked as a stored developer-metadata ROW COUNT
+ * (getLastRow() minus the count = where cards start), which only stays
+ * correct if that number is perfectly kept in sync with reality — any
+ * interrupted run, or two runs overlapping (see withUpcomingEventsLock_),
+ * lets the stored count drift from the sheet's actual contents, and
+ * every rebuild after that either treats real data as leftover cards or
+ * treats leftover cards as real data. That's exactly what produced a
+ * stat tile reading "40" with duplicated, stacked event cards.
+ *
+ * Instead of trusting a separately-stored number, this reads the answer
+ * straight out of the footer row the *last* rebuild already left behind
+ * — its text literally says "hidden rows <headerRow>–<dataLastRow>",
+ * so that number is always exactly as current as the sheet itself, and
+ * there's nothing to keep in sync by hand. createTextFinder searches the
+ * actual cell contents, so this is unaffected by developer-metadata
+ * copy/scoping quirks and needs no migration for a sheet already
+ * formatted by an older version of this script.
+ */
+function getPriorCardBlockBoundary_(sheet) {
+  const match = sheet.createTextFinder(FOOTER_MARKER_TEXT_).matchEntireCell(false).findNext();
+  if (!match) return 0;
 
-
-/** Stores the row-count of the just-generated card block, replacing any previous entry. */
-function setCardBlockRowCount_(sheet, count) {
-  sheet.createDeveloperMetadataFinder().withKey(CARD_META_KEY_).find()
-    .forEach(entry => entry.remove());
-  sheet.addDeveloperMetadata(CARD_META_KEY_, String(count));
+  const m = /hidden rows\s+\d+\s*[–-]\s*(\d+)/.exec(match.getValue());
+  return m ? parseInt(m[1], 10) : 0;
 }
 
 
