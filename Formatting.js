@@ -34,6 +34,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('TAU Tools')
     .addItem('Refresh sheet formatting', 'refreshAllFormatting')
+    .addItem('Test Upcoming Events formatting (safe copy)', 'testUpcomingEventsFormattingOnCopy')
     .addToUi();
 }
 
@@ -118,6 +119,58 @@ function formatUpcomingEventsSummary() {
   if (!sheet) {
     throw new Error(`Sheet named "${UPCOMING_EVENTS_SHEET_NAME}" was not found.`);
   }
+
+  applyUpcomingEventsFormatting_(sheet);
+}
+
+
+/**
+ * Duplicates "TAU Upcoming Events" and runs the exact same formatting
+ * logic against the copy only. Use this to verify the masthead/stat-tile
+ * insert works before ever pointing it at the real tab — nothing here
+ * touches the live sheet. Delete the copy from the tab bar when done.
+ */
+function testUpcomingEventsFormattingOnCopy() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const source = spreadsheet.getSheetByName(UPCOMING_EVENTS_SHEET_NAME);
+
+  if (!source) {
+    throw new Error(`Sheet named "${UPCOMING_EVENTS_SHEET_NAME}" was not found.`);
+  }
+
+  const testName = UPCOMING_EVENTS_SHEET_NAME + ' TEST COPY';
+  const existingTestCopy = spreadsheet.getSheetByName(testName);
+  if (existingTestCopy) {
+    spreadsheet.deleteSheet(existingTestCopy); // start fresh each time this is run
+  }
+
+  const copy = source.copyTo(spreadsheet);
+  copy.setName(testName);
+  spreadsheet.setActiveSheet(copy);
+
+  applyUpcomingEventsFormatting_(copy);
+
+  SpreadsheetApp.getUi().alert(
+    'Formatted "' + copy.getName() + '" — check it over. The real "' +
+    UPCOMING_EVENTS_SHEET_NAME + '" tab was not touched. Once it looks ' +
+    'right, run "Refresh sheet formatting" for real, then delete this ' +
+    'test copy tab.'
+  );
+}
+
+
+/**
+ * The actual masthead + formatting logic, factored out so it can run
+ * against either the real sheet or a disposable test copy.
+ */
+function applyUpcomingEventsFormatting_(sheet) {
+  // Clear any frozen rows/columns left over from a previous run before
+  // inserting or merging anything — Sheets refuses to merge a range that
+  // straddles a frozen/non-frozen column boundary, which is exactly what
+  // a full-width banner merge does if column A is already frozen.
+  sheet.setFrozenRows(0);
+  sheet.setFrozenColumns(0);
+  SpreadsheetApp.flush(); // make sure the freeze change actually lands before merging
 
   ensureUpcomingEventsMasthead_(sheet);
 
