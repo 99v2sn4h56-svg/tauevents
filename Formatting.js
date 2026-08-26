@@ -24,8 +24,6 @@ const BRAND_BLUE_ = '#2E5090';        // masthead banner background (primary)
 const BRAND_BLUE_DEEP_ = '#1F3B66';   // stat tile numbers / accents
 const BRAND_MAROON_ = '#5C1B2E';      // secondary accent only — banner underline rule
 const BRAND_BANNER_TEXT_ = '#EDF1F9'; // light blue-white, reads on the blue banner
-const BRAND_TILE_RULE_ = '#C7D6EE';   // thin underline beneath each stat tile — no filled box
-const BRAND_TILE_LABEL_ = '#5B6472';  // muted grey label text
 const CARD_CANVAS_BG_ = '#F4F6FB';    // soft backdrop the cards float on, replacing table gridlines
 const CARD_TEXT_PRIMARY_ = '#1F2937'; // event name colour — neutral ink, not brand blue
 
@@ -252,6 +250,7 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
   const dataRowCount = dataLastRow - headerRow;
 
   if (dataRowCount <= 0) {
+    setUpcomingEventsCountTile_(sheet, lastColumn, 0);
     setCardBlockRowCount_(sheet, 0);
     return;
   }
@@ -337,14 +336,17 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
 
   const footerRow = dataLastRow + 1 + dataRowCount * CARD_ROWS_PER_EVENT_;
   const footerRange = sheet.getRange(footerRow, 1, 1, lastColumn);
+  footerRange.setBorder(false, false, false, false, false, false);
   footerRange.merge();
   sheet.getRange(footerRow, 1).setValue(
     '✎  Event details live in hidden rows ' + headerRow + '–' + dataLastRow + ' above — unhide them to add ' +
     'or edit an event, then run TAU Tools → Refresh sheet formatting to update these cards.'
   );
   footerRange
+    .setBackground(CARD_CANVAS_BG_)
     .setFontFamily('Public Sans')
     .setFontSize(9)
+    .setFontWeight('normal')
     .setFontStyle('italic')
     .setFontColor('#8A93A6')
     .setHorizontalAlignment('left')
@@ -357,6 +359,13 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
   if (maxRows > footerRow) {
     sheet.getRange(footerRow + 1, 1, maxRows - footerRow, lastColumn).setBackground(CARD_CANVAS_BG_);
   }
+
+  // The "Upcoming events" tile is written directly here (not left as a
+  // formula scanning a wide range) — now that the card rows themselves
+  // contain formula-driven text in the same columns as the hidden data,
+  // any range-scanning formula double-counts card content alongside the
+  // real rows. This function already knows the true count.
+  setUpcomingEventsCountTile_(sheet, lastColumn, dataRowCount);
 
   setCardBlockRowCount_(sheet, totalCardRows);
 }
@@ -389,6 +398,15 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
   const contentCol = 3; // column C onward — column A is the date badge, B the status tag
   const contentWidth = lastColumn - contentCol + 1;
 
+  // insertRowsAfter copies the anchor row's formatting into every new row —
+  // borders, bold, italics, whatever the original flat table happened to
+  // have. Wipe the whole block back to a blank slate before applying any
+  // of this card's own styling, or stray inherited formatting (a grid of
+  // black borders, unintentionally-bold text) bleeds straight through.
+  const wholeCardRange = sheet.getRange(titleRow, 1, 3, lastColumn);
+  wholeCardRange.setBorder(false, false, false, false, false, false);
+  wholeCardRange.setFontWeight('normal').setFontStyle('normal');
+
   // --- Date badge: its own tinted block, spanning the full card height —
   // the clear per-event date marker, read before anything else ---
   const dateRange = sheet.getRange(titleRow, 1, 3, 1);
@@ -399,6 +417,7 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
     .setFontFamily('Public Sans')
     .setFontSize(10)
     .setFontWeight('bold')
+    .setFontStyle('normal')
     .setFontColor(BRAND_BLUE_DEEP_)
     .setHorizontalAlignment('center')
     .setVerticalAlignment('middle')
@@ -413,6 +432,7 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
     .setFontFamily('Public Sans')
     .setFontSize(8.5)
     .setFontWeight('bold')
+    .setFontStyle('normal')
     .setHorizontalAlignment('center')
     .setVerticalAlignment('middle')
     .setWrap(true);
@@ -420,19 +440,22 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
   // Meta/description rows of the status column stay blank canvas.
   sheet.getRange(metaRow, 2, 2, 1).setBackground(CARD_CANVAS_BG_);
 
-  // --- Title row: event name, left-aligned ---
+  // --- Title row: event name — the boldest, largest, darkest element ---
   const nameRange = sheet.getRange(titleRow, contentCol, 1, contentWidth);
   nameRange.merge();
   sheet.getRange(titleRow, contentCol).setFormula(`=TO_TEXT(${cols.nameLetter}${dataRow})`);
   nameRange
     .setFontFamily('Public Sans')
-    .setFontSize(12)
+    .setFontSize(13)
     .setFontWeight('bold')
+    .setFontStyle('normal')
     .setFontColor(CARD_TEXT_PRIMARY_)
     .setHorizontalAlignment('left')
     .setVerticalAlignment('middle');
 
-  // --- Meta row: venue · organisation, left-aligned ---
+  // --- Meta row: venue · organisation — a distinct middle tier: still
+  // bold so it reads as a label, but smaller and in a muted ink rather
+  // than competing with the event name ---
   const metaRange = sheet.getRange(metaRow, contentCol, 1, contentWidth);
   metaRange.merge();
   sheet.getRange(metaRow, contentCol).setFormula(
@@ -441,11 +464,14 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
   metaRange
     .setFontFamily('Public Sans')
     .setFontSize(9)
-    .setFontColor('#6B7280')
+    .setFontWeight('bold')
+    .setFontStyle('normal')
+    .setFontColor('#44546F')
     .setHorizontalAlignment('left')
     .setVerticalAlignment('middle');
 
-  // --- Description row (+ TAU Notes, if present), left-aligned ---
+  // --- Description row (+ TAU Notes, if present) — the quietest tier:
+  // regular weight, italic, lightest ink, clearly supplementary ---
   const descRange = sheet.getRange(descRow, contentCol, 1, contentWidth);
   descRange.merge();
   const notesFormula = cols.notesLetter
@@ -454,8 +480,10 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
   sheet.getRange(descRow, contentCol).setFormula(`=TO_TEXT(${cols.descLetter}${dataRow})${notesFormula}`);
   descRange
     .setFontFamily('Public Sans')
-    .setFontSize(9.5)
-    .setFontColor('#3B4354')
+    .setFontSize(9)
+    .setFontWeight('normal')
+    .setFontStyle('italic')
+    .setFontColor('#8A93A6')
     .setHorizontalAlignment('left')
     .setVerticalAlignment('top')
     .setWrap(true);
@@ -467,8 +495,8 @@ function buildEventCard_(sheet, top, dataRow, lastColumn, cols) {
 
   sheet.setRowHeight(titleRow, 26);
   sheet.setRowHeight(metaRow, 18);
-  sheet.setRowHeight(descRow, 34);
-  sheet.setRowHeight(spacerRow, 14);
+  sheet.setRowHeight(descRow, 32);
+  sheet.setRowHeight(spacerRow, 16);
 
   // Spacer row: matches the page backdrop, no border — the whitespace
   // gap between one card and the next.
@@ -514,13 +542,7 @@ function ensureUpcomingEventsMasthead_(sheet) {
   const lastColumn = Math.max(sheet.getLastColumn(), 4);
   const headerRow = 4; // just shifted the old row 1 down by 3
 
-  const nameHeaderCol = findHeaderColumn_(
-    sheet.getRange(headerRow, 1, 1, lastColumn).getValues()[0],
-    'Name of Event:'
-  );
-
   const statusColLetter = columnToLetter_(1); // status lives in column A, per formatUpcomingEventsSummary
-  const nameColLetter = columnToLetter_(nameHeaderCol > 0 ? nameHeaderCol : 2);
   const firstDataRow = headerRow + 1;
 
   // --- Row 1: banner (blue — the primary heading colour) ---
@@ -540,53 +562,73 @@ function ensureUpcomingEventsMasthead_(sheet) {
     .setBorder(null, null, true, null, null, null, BRAND_MAROON_, SpreadsheetApp.BorderStyle.SOLID);
   sheet.setRowHeight(1, 34);
 
-  // --- Rows 2–3: stat tiles (number, then label underneath) ---
+  // --- Rows 2–3: stat tiles — small bold ALL-CAPS label under a coloured
+  // top rule, then the number below in a large weight. Each label/rule
+  // is tinted a different accent so the row itself carries some colour
+  // variety instead of reading as one flat blue block. "Upcoming events"
+  // is left without a formula here — rebuildEventCards_ writes the real
+  // count directly once it knows it (see setUpcomingEventsCountTile_).
   const groups = splitColumnsIntoGroups_(lastColumn, 4);
 
   const tiles = [
-    { label: 'Upcoming events',   formula: `=SUMPRODUCT(--ISTEXT(${nameColLetter}${firstDataRow}:${nameColLetter}${firstDataRow + 300}))` },
-    { label: 'In planning',       formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"2.*")` },
-    { label: 'Awaiting response', formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"1.*")` },
-    { label: 'Completed',         formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"3.*")` }
+    { label: 'Upcoming events',   accent: BRAND_BLUE_DEEP_, formula: null },
+    { label: 'In planning',       accent: '#2E5090', formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"2.*")` },
+    { label: 'Awaiting response', accent: '#8A5D07', formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"1.*")` },
+    { label: 'Completed',         accent: '#227A45', formula: `=COUNTIF(${statusColLetter}${firstDataRow}:${statusColLetter},"3.*")` }
   ];
 
   groups.forEach((group, i) => {
     const tile = tiles[i];
     if (!tile || group.span === 0) return;
 
-    const numberCell = sheet.getRange(2, group.startCol, 1, group.span);
+    const labelCell = sheet.getRange(2, group.startCol, 1, group.span);
+    labelCell.merge();
+    sheet.getRange(2, group.startCol).setValue(tile.label.toUpperCase());
+    labelCell
+      .setBackground('#FFFFFF')
+      .setFontColor(tile.accent)
+      .setFontWeight('bold')
+      .setFontStyle('normal')
+      .setFontSize(8.5)
+      .setFontFamily('Public Sans')
+      .setHorizontalAlignment('center')
+      .setVerticalAlignment('bottom')
+      .setBorder(true, null, null, null, null, null, tile.accent, SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+
+    const numberCell = sheet.getRange(3, group.startCol, 1, group.span);
     numberCell.merge();
-    sheet.getRange(2, group.startCol).setFormula(tile.formula);
+    if (tile.formula) {
+      sheet.getRange(3, group.startCol).setFormula(tile.formula);
+    }
     numberCell
       .setBackground('#FFFFFF')
       .setFontColor(BRAND_BLUE_DEEP_)
       .setFontWeight('bold')
+      .setFontStyle('normal')
       .setFontSize(19)
       .setFontFamily('Public Sans')
       .setHorizontalAlignment('center')
-      .setVerticalAlignment('bottom')
+      .setVerticalAlignment('top')
       .setNumberFormat('0');
-
-    const labelCell = sheet.getRange(3, group.startCol, 1, group.span);
-    labelCell.merge();
-    sheet.getRange(3, group.startCol).setValue(tile.label);
-    labelCell
-      .setBackground('#FFFFFF')
-      .setFontColor(BRAND_TILE_LABEL_)
-      .setFontWeight('normal')
-      .setFontSize(9)
-      .setFontFamily('Public Sans')
-      .setHorizontalAlignment('center')
-      .setVerticalAlignment('top');
-
-    // Thin rule under the whole tile group instead of a filled box — a
-    // quieter, more contemporary way to separate the stats visually.
-    sheet.getRange(2, group.startCol, 2, group.span)
-      .setBorder(null, null, true, null, null, null, BRAND_TILE_RULE_, SpreadsheetApp.BorderStyle.SOLID);
   });
 
-  sheet.setRowHeight(2, 30);
-  sheet.setRowHeight(3, 18);
+  sheet.setRowHeight(2, 20);
+  sheet.setRowHeight(3, 30);
+}
+
+
+/**
+ * Writes the true "Upcoming events" count directly into its tile cell.
+ * Kept separate from a formula because the card rows below now put
+ * formula-driven text in the same columns the hidden data lives in, so
+ * a range-scanning COUNTA/ISTEXT formula would double-count the cards
+ * themselves alongside the real data.
+ */
+function setUpcomingEventsCountTile_(sheet, lastColumn, count) {
+  const groups = splitColumnsIntoGroups_(lastColumn, 4);
+  const first = groups[0];
+  if (!first || first.span === 0) return;
+  sheet.getRange(3, first.startCol).setValue(count);
 }
 
 
