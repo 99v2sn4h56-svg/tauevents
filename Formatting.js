@@ -477,7 +477,8 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
 
 /**
  * Returns { offsets, errorCount } — offsets are the (0-based, relative
- * to headerRow+1) positions of data rows to actually render as cards:
+ * to headerRow+1) positions of data rows to actually render as cards,
+ * already sorted into CHRONOLOGICAL order (soonest date first), for
  * every row EXCEPT ones more than a week stale, and except ones where a
  * source cell is a spreadsheet error (e.g. a broken #REF! formula —
  * TO_TEXT() of an error cell propagates the error rather than returning
@@ -491,7 +492,8 @@ function rebuildEventCards_(sheet, headerRow, statusCol) {
  * so this can't disagree with what the countdown itself shows. A date
  * that fails to parse is treated as 9999 days out — kept, never
  * dropped, since we'd rather show an odd date than silently lose a real
- * event.
+ * event, and that same 9999 sorts it to the end of the list rather than
+ * to some arbitrary spot in the middle.
  */
 function getIncludedRowOffsets_(sheet, headerRow, dataRowCount, lastColumn, cols) {
   const scratchCol = lastColumn + 2; // just past the real columns; these rows are hidden anyway
@@ -516,16 +518,26 @@ function getIncludedRowOffsets_(sheet, headerRow, dataRowCount, lastColumn, cols
   const results = scratchRange.getValues().map(row => row[0]);
   scratchRange.clearContent();
 
-  const offsets = [];
+  const kept = []; // { offset, dayDiff } — dayDiff doubles as the chronological sort key
   let errorCount = 0;
   for (let i = 0; i < dataRowCount; i++) {
     if (results[i] === 'ERROR') {
       errorCount++;
     } else if (results[i] >= -7) {
-      offsets.push(i);
+      kept.push({ offset: i, dayDiff: results[i] });
     }
   }
-  return { offsets, errorCount };
+
+  // Soonest date first — this is what makes the card list read top-to-
+  // bottom as a chronological schedule instead of just following
+  // whatever order rows happen to sit in on the hidden flat table. A
+  // date that failed to parse got dayDiff 9999 above (see the formula),
+  // which naturally sorts those events to the very end rather than
+  // guessing at a position for them; events that tie on date keep their
+  // original relative order (Array#sort is stable).
+  kept.sort((a, b) => a.dayDiff - b.dayDiff);
+
+  return { offsets: kept.map(k => k.offset), errorCount };
 }
 
 
